@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">CamTel</string>
+    <string name="switch_camera">Caméra</string>
+    <string name="torch">Flash</string>
+    <string name="resolution">Résolution</string>
+    <string name="blackout">Écran noir</string>
+    <string name="blackout_hint">Touchez l\'écran pour le rallumer</string>
+    <string name="permission_needed">CamTel a besoin de la caméra pour fonctionner.</string>
+</resources>

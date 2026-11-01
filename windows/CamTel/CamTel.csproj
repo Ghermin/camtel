@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>CamTel</AssemblyName>
+    <RootNamespace>CamTel</RootNamespace>
+    <ApplicationIcon>camtel.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Version>1.0.0</Version>
+    <Product>CamTel</Product>
+    <Description>CamTel - utilise ton téléphone comme webcam</Description>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="camtel.ico" LogicalName="camtel.ico" />
+    <!-- Built from ../../driver by CI (or scripts/fetch-driver.ps1); optional for UI-only builds. -->
+    <EmbeddedResource Include="driver\x64\softcam.dll" LogicalName="softcam64.dll" Condition="Exists('driver\x64\softcam.dll')" />
+    <EmbeddedResource Include="driver\x86\softcam.dll" LogicalName="softcam32.dll" Condition="Exists('driver\x86\softcam.dll')" />
+  </ItemGroup>
+
+</Project>

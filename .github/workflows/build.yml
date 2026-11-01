@@ -1,0 +1,124 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  driver:
+    name: Virtual camera driver
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        platform: [x64, Win32]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: microsoft/setup-msbuild@v2
+      - name: Build softcam (CamTel Camera)
+        working-directory: driver
+        run: msbuild softcam.sln /m /t:softcam /p:Configuration=Release /p:Platform=${{ matrix.platform }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: driver-${{ matrix.platform }}
+          path: driver/dist/bin/${{ matrix.platform }}/softcam.dll
+          if-no-files-found: error
+
+  windows:
+    name: Windows app
+    needs: driver
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - uses: actions/download-artifact@v4
+        with:
+          name: driver-x64
+          path: windows/CamTel/driver/x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: driver-Win32
+          path: windows/CamTel/driver/x86
+      - name: Version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF_NAME#v}"; else v="0.0.${GITHUB_RUN_NUMBER}"; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - name: Publish
+        working-directory: windows/CamTel
+        run: dotnet publish -c Release -o ../../out /p:Version=${{ steps.ver.outputs.version }}
+      - name: Driver zip
+        shell: pwsh
+        run: Compress-Archive -Path windows/CamTel/driver/* -DestinationPath out/camtel-driver.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CamTel-windows
+          path: |
+            out/CamTel.exe
+            out/camtel-driver.zip
+          if-no-files-found: error
+
+  android:
+    name: Android app
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Version
+        id: ver
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF_NAME#v}"; else v="0.0.${GITHUB_RUN_NUMBER}"; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - name: Keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "CAMTEL_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+          fi
+      - name: Build APK
+        working-directory: android
+        env:
+          CAMTEL_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          CAMTEL_VERSION_NAME: ${{ steps.ver.outputs.version }}
+          CAMTEL_VERSION_CODE: ${{ github.run_number }}
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+          cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/CamTel.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CamTel-android
+          path: CamTel.apk
+          if-no-files-found: error
+
+  release:
+    name: GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --title "CamTel $GITHUB_REF_NAME" \
+            --notes "**PC** : télécharge \`CamTel.exe\` et lance-le. **Téléphone** : installe \`CamTel.apk\`." \
+            dist/CamTel.exe dist/CamTel.apk dist/camtel-driver.zip

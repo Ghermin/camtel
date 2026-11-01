@@ -1,0 +1,16 @@
+# .NET
+windows/**/bin/
+windows/**/obj/
+windows/CamTel/driver/
+out/
+*.user
+.vs/
+
+# Driver build outputs
+driver/x64/
+driver/Win32/
+driver/dist/
+driver/src/**/x64/
+driver/src/**/Win32/
+driver/tests/**/x64/
+driver/tests/**/Win32/
