@@ -29,16 +29,20 @@ public static class DriverInstaller
 
     public static bool IsInstalled => RegisteredDll64() != null;
 
-    /// <summary>True when the embedded DLL differs from the installed one (app update).</summary>
+    /// <summary>
+    /// Bump when the driver sources in /driver change. Compared with the installed marker so an
+    /// app update only asks for admin rights when the driver itself changed.
+    /// </summary>
+    public const string DriverVersion = "1";
+
+    private static string VersionFile => Path.Combine(DriverRoot, "version.txt");
+
     public static bool NeedsUpdate()
     {
-        var installed = RegisteredDll64();
-        if (installed == null) return true;
+        if (RegisteredDll64() == null) return true;
         try
         {
-            using var res = OpenResource("softcam64.dll");
-            if (res == null) return false;
-            return new FileInfo(installed).Length != res.Length || !SameContent(installed, res);
+            return !File.Exists(VersionFile) || File.ReadAllText(VersionFile).Trim() != DriverVersion;
         }
         catch
         {
@@ -85,6 +89,7 @@ public static class DriverInstaller
             var ok = RegSvr32(Dll64Path, wow64: false, unregister: false);
             if (File.Exists(Dll32Path))
                 ok &= RegSvr32(Dll32Path, wow64: true, unregister: false);
+            if (ok) File.WriteAllText(VersionFile, DriverVersion);
             return ok ? 0 : 2;
         }
         catch (Exception ex)

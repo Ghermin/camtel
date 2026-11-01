@@ -60,7 +60,6 @@ class CameraService : LifecycleService(), StreamServer.Controller {
 
     private val hub = FrameHub()
     private var server: StreamServer? = null
-    private var discovery: Discovery? = null
 
     private var cameraProvider: ProcessCameraProvider? = null
     private var camera: Camera? = null
@@ -107,7 +106,6 @@ class CameraService : LifecycleService(), StreamServer.Controller {
                     Log.e(TAG, "server start failed", e)
                 }
             }
-            discovery = Discovery(deviceName, HTTP_PORT).also { it.start() }
             val future = ProcessCameraProvider.getInstance(this)
             future.addListener({
                 cameraProvider = future.get()
@@ -123,7 +121,6 @@ class CameraService : LifecycleService(), StreamServer.Controller {
     }
 
     override fun onDestroy() {
-        discovery?.stop()
         server?.stop()
         analysisExecutor.shutdown()
         CamState.clients = 0

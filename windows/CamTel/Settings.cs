@@ -11,6 +11,8 @@ public sealed class Settings
     public int OutputHeight { get; set; } = 720;
     public int Rotation { get; set; }
     public bool Fill { get; set; }
+    public bool Installed { get; set; }
+    public bool TrayTipShown { get; set; }
 
     private static string FilePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CamTel", "settings.json");
