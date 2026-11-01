@@ -33,16 +33,26 @@ CamTel dans le pare-feu Windows (réseaux privés) pour la détection automatiqu
 
 ## Fonctionnalités
 
-| Téléphone | PC |
-|---|---|
-| Caméra arrière / avant | Sortie 640×480, 1280×720 ou 1920×1080 |
-| Résolution 480p / 720p / 1080p | Rotation 0/90/180/270°, miroir |
-| Flash, zoom, qualité JPEG | Adapter ou remplir (rogner) |
-| Écran noir pour économiser la batterie | Reconnexion automatique, icône près de l'horloge |
-| Visionneuse web : `http://<ip-du-tel>:4747/` | Image d'attente quand le téléphone est déconnecté |
+Les mêmes boutons existent sur le téléphone et sur le PC, et restent **synchronisés dans les
+deux sens** : un changement fait d'un côté s'affiche aussitôt de l'autre.
 
-Garde l'app ouverte au premier plan sur le téléphone (utilise **Écran noir** pour économiser
-la batterie) : Android coupe la caméra des applis en arrière-plan.
+| Réglage (tel ⇄ PC) | Rôle |
+|---|---|
+| Caméra avant / arrière | |
+| Flash | caméra arrière |
+| Miroir | appliqué à l'aperçu du tel et à la webcam |
+| 480p / 720p / 1080p | résolution envoyée au PC |
+| 30 ips / Nuit | 30 ips fixes (fluide) ou mode nuit (plus lumineux, ips variables) |
+| Écran noir | éteint l'écran du tel, la caméra continue |
+| Zoom, luminosité (EV), qualité JPEG | curseurs |
+
+Côté PC uniquement : format de sortie de la webcam (640×480, 1280×720, 1920×1080), rotation,
+remplir (rogner au lieu des bandes noires), reconnexion automatique, icône près de l'horloge et
+image d'attente quand le téléphone est déconnecté.
+
+Le téléphone affiche exactement les images envoyées au PC (en version allégée pour économiser
+la batterie). La diffusion continue appli en arrière-plan ou écran verrouillé (notification
+« CamTel diffuse la caméra », bouton **Arrêter**). Visionneuse web : `http://<ip-du-tel>:4747/`.
 
 ## Désinstallation
 
@@ -61,8 +71,8 @@ API HTTP du téléphone :
 | Chemin | Rôle |
 |---|---|
 | `GET /video` | flux MJPEG (`multipart/x-mixed-replace`) |
-| `GET /status` | état en JSON |
-| `GET /control?camera=front\|back\|toggle&torch=on\|off&res=1280x720&quality=80&zoom=0.5` | réglages |
+| `GET /status` | état en JSON ; `?since=<version>` attend un changement (long-polling, 20 s max) |
+| `GET /control?camera=front\|back\|toggle&torch=on\|off&mirror=on\|off&night=on\|off&blackout=on\|off&res=1280x720&quality=80&zoom=0.5&exposure=-1.0` | réglages |
 
 ### Limites connues
 

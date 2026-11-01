@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * Minimal HTTP server:
  *  GET /video    -> MJPEG stream (multipart/x-mixed-replace)
- *  GET /status   -> JSON status
+ *  GET /status   -> JSON status (?since=<version> long-polls until the state changes)
  *  GET /control  -> apply query parameters, returns JSON status
  *  GET /         -> tiny HTML viewer
  */
@@ -25,7 +25,9 @@ class StreamServer(
 ) {
     interface Controller {
         fun statusJson(): String
+        fun awaitChange(since: Long, timeoutMs: Long)
         fun control(params: Map<String, String>)
+        fun onClientsChanged(count: Int)
     }
 
     private val clients = AtomicInteger(0)
@@ -76,7 +78,13 @@ class StreamServer(
                 val out = BufferedOutputStream(s.getOutputStream(), 128 * 1024)
                 when (path) {
                     "/video", "/mjpeg", "/video.mjpg" -> streamVideo(s, out)
-                    "/status" -> respond(out, "200 OK", "application/json", controller.statusJson())
+                    "/status" -> {
+                        query["since"]?.toLongOrNull()?.let {
+                            s.soTimeout = 0
+                            controller.awaitChange(it, 20_000)
+                        }
+                        respond(out, "200 OK", "application/json", controller.statusJson())
+                    }
                     "/control" -> {
                         controller.control(query)
                         respond(out, "200 OK", "application/json", controller.statusJson())
@@ -102,7 +110,7 @@ class StreamServer(
                 "Connection: close\r\n\r\n").toByteArray(Charsets.ISO_8859_1)
         )
         out.flush()
-        clients.incrementAndGet()
+        controller.onClientsChanged(clients.incrementAndGet())
         try {
             var seq = 0L
             while (!socket.isClosed) {
@@ -119,7 +127,7 @@ class StreamServer(
             }
         } catch (_: InterruptedException) {
         } finally {
-            clients.decrementAndGet()
+            controller.onClientsChanged(clients.decrementAndGet())
         }
     }
 

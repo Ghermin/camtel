@@ -1,9 +1,18 @@
 <resources>
     <string name="app_name">CamTel</string>
-    <string name="switch_camera">Caméra</string>
+    <string name="switch_camera">Changer de caméra</string>
     <string name="torch">Flash</string>
+    <string name="mirror">Miroir</string>
     <string name="resolution">Résolution</string>
     <string name="blackout">Écran noir</string>
-    <string name="blackout_hint">Touchez l\'écran pour le rallumer</string>
+    <string name="quit">Arrêter CamTel</string>
+    <string name="zoom">Zoom</string>
+    <string name="exposure">Luminosité</string>
+    <string name="night">Mode nuit (plus lumineux, moins fluide)</string>
+    <string name="blackout_hint">CamTel diffuse toujours.\nTouchez l\'écran pour le rallumer.</string>
     <string name="permission_needed">CamTel a besoin de la caméra pour fonctionner.</string>
+    <string name="channel_name">Diffusion de la caméra</string>
+    <string name="notif_title">CamTel diffuse la caméra</string>
+    <string name="notif_text">Touchez pour ouvrir · le PC peut se connecter</string>
+    <string name="stop">Arrêter</string>
 </resources>

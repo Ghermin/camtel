@@ -35,12 +35,12 @@ public static class MjpegClient
     }
 
     /// <summary>GET on the phone's HTTP API, returns the body or null on failure.</summary>
-    public static async Task<string?> GetStringAsync(Uri uri, CancellationToken ct = default)
+    public static async Task<string?> GetStringAsync(Uri uri, CancellationToken ct = default, TimeSpan? timeout = null)
     {
         try
         {
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            cts.CancelAfter(TimeSpan.FromSeconds(4));
+            cts.CancelAfter(timeout ?? TimeSpan.FromSeconds(4));
             return await Http.GetStringAsync(uri, cts.Token);
         }
         catch

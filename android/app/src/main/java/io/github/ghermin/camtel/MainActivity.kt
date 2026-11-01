@@ -1,72 +1,99 @@
 package io.github.ghermin.camtel
 
 import android.Manifest
+import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
+import android.os.IBinder
 import android.os.Looper
-import android.util.Log
-import android.util.Size
+import android.view.View
 import android.view.WindowManager
+import android.widget.SeekBar
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.camera.core.AspectRatio
-import androidx.camera.core.Camera
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.ImageProxy
-import androidx.camera.core.Preview
-import androidx.camera.core.resolutionselector.AspectRatioStrategy
-import androidx.camera.core.resolutionselector.ResolutionSelector
-import androidx.camera.core.resolutionselector.ResolutionStrategy
-import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import io.github.ghermin.camtel.databinding.ActivityMainBinding
-import java.io.ByteArrayOutputStream
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
-class MainActivity : AppCompatActivity(), StreamServer.Controller {
+/** UI only: shows the preview and the controls. The camera itself lives in [CameraService]. */
+class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
-    private lateinit var analysisExecutor: ExecutorService
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val prefs by lazy { getSharedPreferences("camtel", Context.MODE_PRIVATE) }
+    private var service: CameraService? = null
+    private var bound = false
 
-    private val hub = FrameHub()
-    private var server: StreamServer? = null
-    private var discovery: Discovery? = null
+    private val stateListener: () -> Unit = { render() }
 
-    private var cameraProvider: ProcessCameraProvider? = null
-    private var camera: Camera? = null
-    private var preview: Preview? = null
-    private var analysis: ImageAnalysis? = null
+    // Double-buffered decode of the streamed JPEGs (called on the camera thread).
+    private val previewBitmaps = arrayOfNulls<Bitmap>(2)
+    private var previewIndex = 0
+    private val drawPending = AtomicBoolean(false)
+    private val previewSink: (ByteArray) -> Unit = sink@{ jpeg ->
+        if (!drawPending.compareAndSet(false, true)) return@sink
+        try {
+            val opts = BitmapFactory.Options().apply {
+                // The phone only needs a light preview; the PC still gets the full-quality frame.
+                inSampleSize = if (CamState.frameWidth >= 1280) 2 else 1
+                inPreferredConfig = Bitmap.Config.RGB_565
+                inMutable = true
+                inBitmap = previewBitmaps[previewIndex]
+            }
+            val bmp = try {
+                BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, opts)
+            } catch (_: IllegalArgumentException) {
+                // Size changed: the reusable bitmap no longer fits.
+                opts.inBitmap = null
+                BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, opts)
+            }
+            if (bmp == null) {
+                drawPending.set(false)
+                return@sink
+            }
+            previewBitmaps[previewIndex] = bmp
+            previewIndex = 1 - previewIndex
+            mainHandler.post {
+                binding.preview.setImageBitmap(bmp)
+                drawPending.set(false)
+            }
+        } catch (_: Exception) {
+            drawPending.set(false)
+        }
+    }
 
-    @Volatile private var useFront = false
-    @Volatile private var torchOn = false
-    @Volatile private var resolutionIndex = 1
-    @Volatile private var quality = 80
-    @Volatile private var zoom = 0f
-    @Volatile private var frameWidth = 0
-    @Volatile private var frameHeight = 0
-    @Volatile private var fps = 0
-    private var frameCount = 0
-    private var fpsWindowStart = System.nanoTime()
+    private val connection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            service = (binder as CameraService.LocalBinder).service
+            attachPreview()
+            render()
+        }
 
-    private val jpegBuffer = ByteArrayOutputStream(512 * 1024)
-    private var reusableBitmap: Bitmap? = null
+        override fun onServiceDisconnected(name: ComponentName?) {
+            service = null
+        }
+    }
+
+    private val finishReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) = finish()
+    }
 
     private val permissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (granted) startCamera() else {
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+            if (result[Manifest.permission.CAMERA] == true) startAndBind() else {
                 Toast.makeText(this, R.string.permission_needed, Toast.LENGTH_LONG).show()
                 finish()
             }
@@ -75,11 +102,7 @@ class MainActivity : AppCompatActivity(), StreamServer.Controller {
     private val displayListener = object : DisplayManager.DisplayListener {
         override fun onDisplayAdded(displayId: Int) {}
         override fun onDisplayRemoved(displayId: Int) {}
-        override fun onDisplayChanged(displayId: Int) {
-            val rotation = binding.preview.display?.rotation ?: return
-            preview?.targetRotation = rotation
-            analysis?.targetRotation = rotation
-        }
+        override fun onDisplayChanged(displayId: Int) = attachPreview()
     }
 
     private val infoUpdater = object : Runnable {
@@ -96,34 +119,60 @@ class MainActivity : AppCompatActivity(), StreamServer.Controller {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         hideSystemBars()
 
-        useFront = prefs.getBoolean("front", false)
-        resolutionIndex = prefs.getInt("res", 1).coerceIn(RESOLUTIONS.indices)
-        quality = prefs.getInt("quality", 80).coerceIn(30, 100)
-
-        analysisExecutor = Executors.newSingleThreadExecutor()
-
-        server = StreamServer(HTTP_PORT, hub, this).also {
-            try {
-                it.start()
-            } catch (e: Exception) {
-                Log.e(TAG, "server start failed", e)
-                Toast.makeText(this, "Port $HTTP_PORT indisponible", Toast.LENGTH_LONG).show()
-            }
+        binding.btnSwitch.setOnClickListener { service?.setFront(!CamState.front) }
+        binding.btnTorch.setOnClickListener { service?.setTorch(!CamState.torch) }
+        binding.btnMirror.setOnClickListener { service?.setMirror(!CamState.mirror) }
+        binding.btnRes.setOnClickListener {
+            service?.setResolution((CamState.resIndex + 1) % CamState.RESOLUTIONS.size)
         }
-        discovery = Discovery(deviceName(), HTTP_PORT).also { it.start() }
+        binding.btnFps.setOnClickListener { service?.setNight(!CamState.night) }
+        binding.btnBlack.setOnClickListener { service?.setBlackout(true) }
+        binding.blackout.setOnClickListener { service?.setBlackout(false) }
+        binding.btnQuit.setOnClickListener {
+            service?.stopEverything() ?: finish()
+        }
+        binding.zoom.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (fromUser) service?.setZoom(progress / 100f)
+            }
+            override fun onStartTrackingTouch(sb: SeekBar?) {}
+            override fun onStopTrackingTouch(sb: SeekBar?) {}
+        })
 
-        binding.btnSwitch.setOnClickListener { setFront(!useFront) }
-        binding.btnTorch.setOnClickListener { setTorch(!torchOn) }
-        binding.btnRes.setOnClickListener { setResolution((resolutionIndex + 1) % RESOLUTIONS.size) }
-        binding.btnBlack.setOnClickListener { setBlackout(true) }
-        binding.blackout.setOnClickListener { setBlackout(false) }
+        binding.exposure.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (!fromUser) return
+                val ev = CamState.exposureMin + (CamState.exposureMax - CamState.exposureMin) * progress / 100f
+                service?.setExposure(ev)
+            }
+            override fun onStartTrackingTouch(sb: SeekBar?) {}
+            override fun onStopTrackingTouch(sb: SeekBar?) {}
+        })
 
+        ContextCompat.registerReceiver(
+            this, finishReceiver, IntentFilter(CameraService.ACTION_FINISH), ContextCompat.RECEIVER_NOT_EXPORTED
+        )
         (getSystemService(Context.DISPLAY_SERVICE) as DisplayManager)
             .registerDisplayListener(displayListener, mainHandler)
 
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
-            PackageManager.PERMISSION_GRANTED
-        ) startCamera() else permissionLauncher.launch(Manifest.permission.CAMERA)
+        val needed = mutableListOf(Manifest.permission.CAMERA)
+        if (Build.VERSION.SDK_INT >= 33) needed += Manifest.permission.POST_NOTIFICATIONS
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            startAndBind()
+            if (Build.VERSION.SDK_INT >= 33 &&
+                ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+                PackageManager.PERMISSION_GRANTED
+            ) permissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
+        } else {
+            permissionLauncher.launch(needed.toTypedArray())
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        CamState.addListener(stateListener)
+        attachPreview()
+        render()
     }
 
     override fun onResume() {
@@ -136,13 +185,32 @@ class MainActivity : AppCompatActivity(), StreamServer.Controller {
         mainHandler.removeCallbacks(infoUpdater)
     }
 
+    override fun onStop() {
+        super.onStop()
+        CamState.removeListener(stateListener)
+        // The view is going away; keep streaming without a preview surface.
+        service?.attachPreview(null, null)
+        // Leaving the app while the screen was "black" should not leave it black.
+        if (CamState.blackout) service?.setBlackout(false)
+    }
+
     override fun onDestroy() {
         super.onDestroy()
-        (getSystemService(Context.DISPLAY_SERVICE) as DisplayManager)
-            .unregisterDisplayListener(displayListener)
-        discovery?.stop()
-        server?.stop()
-        analysisExecutor.shutdown()
+        unregisterReceiver(finishReceiver)
+        (getSystemService(Context.DISPLAY_SERVICE) as DisplayManager).unregisterDisplayListener(displayListener)
+        if (bound) unbindService(connection)
+    }
+
+    private fun startAndBind() {
+        val intent = Intent(this, CameraService::class.java)
+        ContextCompat.startForegroundService(this, intent)
+        bound = bindService(intent, connection, Context.BIND_AUTO_CREATE)
+    }
+
+    private fun attachPreview() {
+        val s = service ?: return
+        if (!lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) return
+        s.attachPreview(previewSink, binding.root.display?.rotation)
     }
 
     private fun hideSystemBars() {
@@ -153,191 +221,43 @@ class MainActivity : AppCompatActivity(), StreamServer.Controller {
         }
     }
 
-    // ---- Camera -----------------------------------------------------------
+    /** Reflects [CamState] in the UI; called on every state change (phone or PC). */
+    private fun render() {
+        binding.btnSwitch.isActivated = CamState.front
+        binding.btnTorch.isActivated = CamState.torch
+        binding.btnTorch.setImageResource(if (CamState.torch) R.drawable.ic_flash_on else R.drawable.ic_flash_off)
+        binding.btnTorch.isEnabled = CamState.hasFlash
+        binding.btnTorch.alpha = if (CamState.hasFlash) 1f else 0.35f
+        binding.btnMirror.isActivated = CamState.mirror
+        binding.btnRes.text = "${CamState.resolution.height}p"
+        binding.btnBlack.isActivated = CamState.blackout
+        val z = (CamState.zoom * 100).toInt()
+        if (binding.zoom.progress != z) binding.zoom.progress = z
+        binding.zoomLabel.text = "$z%"
+        binding.btnFps.text = if (CamState.night) "Nuit" else "30 ips"
+        binding.btnFps.isActivated = CamState.night
+        val span = CamState.exposureMax - CamState.exposureMin
+        binding.exposure.isEnabled = span > 0f
+        val e = if (span > 0f) ((CamState.exposure - CamState.exposureMin) / span * 100).toInt() else 50
+        if (binding.exposure.progress != e) binding.exposure.progress = e
+        binding.exposureLabel.text = String.format(java.util.Locale.FRANCE, "%+.1f EV", CamState.exposure)
 
-    private fun startCamera() {
-        val future = ProcessCameraProvider.getInstance(this)
-        future.addListener({
-            cameraProvider = future.get()
-            bindCamera()
-        }, ContextCompat.getMainExecutor(this))
-    }
+        // The stream itself is never mirrored; the PC mirrors it when the setting is on, so do the same here.
+        binding.preview.scaleX = if (CamState.mirror) -1f else 1f
 
-    private fun bindCamera() {
-        val provider = cameraProvider ?: return
-        val size = RESOLUTIONS[resolutionIndex]
-        val aspect = if (size.width * 3 == size.height * 4) AspectRatio.RATIO_4_3 else AspectRatio.RATIO_16_9
-        val selector = ResolutionSelector.Builder()
-            .setAspectRatioStrategy(AspectRatioStrategy(aspect, AspectRatioStrategy.FALLBACK_RULE_AUTO))
-            .setResolutionStrategy(
-                ResolutionStrategy(size, ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER)
-            )
-            .build()
-        val rotation = binding.preview.display?.rotation ?: windowManager.defaultDisplay.rotation
-
-        val newPreview = Preview.Builder()
-            .setResolutionSelector(selector)
-            .setTargetRotation(rotation)
-            .build()
-            .also { it.surfaceProvider = binding.preview.surfaceProvider }
-
-        val newAnalysis = ImageAnalysis.Builder()
-            .setResolutionSelector(selector)
-            .setTargetRotation(rotation)
-            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
-            .setOutputImageRotationEnabled(true)
-            .build()
-            .also { it.setAnalyzer(analysisExecutor, ::encodeFrame) }
-
-        val cameraSelector = if (useFront) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
-        try {
-            provider.unbindAll()
-            camera = provider.bindToLifecycle(this, cameraSelector, newPreview, newAnalysis)
-            preview = newPreview
-            analysis = newAnalysis
-            torchOn = false
-            camera?.cameraControl?.setLinearZoom(zoom)
-        } catch (e: Exception) {
-            Log.e(TAG, "bind failed", e)
-            if (useFront) {
-                // Device without a usable front camera: fall back to the back one.
-                useFront = false
-                bindCamera()
-            }
-        }
-    }
-
-    private fun encodeFrame(image: ImageProxy) {
-        try {
-            frameWidth = image.width
-            frameHeight = image.height
-            if ((server?.clientCount ?: 0) == 0) return
-
-            val plane = image.planes[0]
-            val bitmap: Bitmap
-            if (plane.rowStride == image.width * 4) {
-                var bmp = reusableBitmap
-                if (bmp == null || bmp.width != image.width || bmp.height != image.height) {
-                    bmp = Bitmap.createBitmap(image.width, image.height, Bitmap.Config.ARGB_8888)
-                    reusableBitmap = bmp
-                }
-                plane.buffer.rewind()
-                bmp.copyPixelsFromBuffer(plane.buffer)
-                bitmap = bmp
-            } else {
-                bitmap = image.toBitmap()
-            }
-
-            jpegBuffer.reset()
-            bitmap.compress(Bitmap.CompressFormat.JPEG, quality, jpegBuffer)
-            hub.publish(jpegBuffer.toByteArray())
-
-            frameCount++
-            val now = System.nanoTime()
-            if (now - fpsWindowStart >= 1_000_000_000L) {
-                fps = frameCount
-                frameCount = 0
-                fpsWindowStart = now
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "encode failed", e)
-        } finally {
-            image.close()
-        }
-    }
-
-    // ---- Controls ---------------------------------------------------------
-
-    private fun setFront(front: Boolean) {
-        if (front == useFront) return
-        useFront = front
-        prefs.edit().putBoolean("front", front).apply()
-        bindCamera()
-    }
-
-    private fun setTorch(on: Boolean) {
-        val cam = camera ?: return
-        if (!cam.cameraInfo.hasFlashUnit()) {
-            Toast.makeText(this, "Pas de flash sur cette caméra", Toast.LENGTH_SHORT).show()
-            return
-        }
-        torchOn = on
-        cam.cameraControl.enableTorch(on)
-    }
-
-    private fun setResolution(index: Int) {
-        if (index !in RESOLUTIONS.indices || index == resolutionIndex) return
-        resolutionIndex = index
-        prefs.edit().putInt("res", index).apply()
-        bindCamera()
-        val s = RESOLUTIONS[index]
-        Toast.makeText(this, "${s.width}x${s.height}", Toast.LENGTH_SHORT).show()
-    }
-
-    private fun setZoom(value: Float) {
-        zoom = value.coerceIn(0f, 1f)
-        camera?.cameraControl?.setLinearZoom(zoom)
-    }
-
-    private fun setBlackout(on: Boolean) {
-        binding.blackout.visibility = if (on) android.view.View.VISIBLE else android.view.View.GONE
+        binding.blackout.visibility = if (CamState.blackout) View.VISIBLE else View.GONE
         window.attributes = window.attributes.apply {
-            screenBrightness = if (on) 0.01f else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+            screenBrightness =
+                if (CamState.blackout) 0.01f else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
         }
+        updateInfo()
     }
 
     private fun updateInfo() {
         val ips = Discovery.localIpv4Addresses()
-        val clients = server?.clientCount ?: 0
-        val addr = if (ips.isEmpty()) "Pas de réseau (USB possible)" else ips.joinToString("\n") { "$it:$HTTP_PORT" }
-        val state = if (clients > 0) "● $clients PC connecté(s) · $fps fps" else "○ En attente du PC…"
-        binding.info.text = "$addr\n$state · ${frameWidth}x$frameHeight"
-    }
-
-    private fun deviceName(): String =
-        (Build.MODEL ?: "Android").replace('|', ' ')
-
-    // ---- StreamServer.Controller (called from network threads) -----------
-
-    override fun statusJson(): String {
-        val s = RESOLUTIONS[resolutionIndex]
-        return """{"app":"CamTel","name":"${deviceName()}","camera":"${if (useFront) "front" else "back"}",""" +
-            """"torch":$torchOn,"resolution":"${s.width}x${s.height}","width":$frameWidth,"height":$frameHeight,""" +
-            """"quality":$quality,"zoom":$zoom,"fps":$fps,"clients":${server?.clientCount ?: 0}}"""
-    }
-
-    override fun control(params: Map<String, String>) {
-        mainHandler.post {
-            params["camera"]?.let {
-                when (it) {
-                    "front" -> setFront(true)
-                    "back" -> setFront(false)
-                    "toggle" -> setFront(!useFront)
-                }
-            }
-            params["torch"]?.let {
-                when (it) {
-                    "on", "1", "true" -> setTorch(true)
-                    "off", "0", "false" -> setTorch(false)
-                    "toggle" -> setTorch(!torchOn)
-                }
-            }
-            params["res"]?.let { r ->
-                val idx = RESOLUTIONS.indexOfFirst { "${it.width}x${it.height}" == r }
-                if (idx >= 0) setResolution(idx)
-            }
-            params["quality"]?.toIntOrNull()?.let {
-                quality = it.coerceIn(30, 100)
-                prefs.edit().putInt("quality", quality).apply()
-            }
-            params["zoom"]?.toFloatOrNull()?.let { setZoom(it) }
-        }
-    }
-
-    companion object {
-        private const val TAG = "CamTel"
-        const val HTTP_PORT = 4747
-        val RESOLUTIONS = listOf(Size(640, 480), Size(1280, 720), Size(1920, 1080))
+        val port = CameraService.HTTP_PORT
+        val addr = if (ips.isEmpty()) "Pas de Wi-Fi · USB possible" else ips.joinToString("\n") { "$it:$port" }
+        val state = if (CamState.clients > 0) "● PC connecté · ${CamState.fps} ips" else "○ En attente du PC…"
+        binding.info.text = "$addr\n$state · ${CamState.frameWidth}×${CamState.frameHeight}"
     }
 }
