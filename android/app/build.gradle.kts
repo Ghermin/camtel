@@ -12,7 +12,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = (System.getenv("CAMTEL_VERSION_CODE") ?: "1").toInt()
-        versionName = System.getenv("CAMTEL_VERSION_NAME") ?: "1.0.0"
+        versionName = System.getenv("CAMTEL_VERSION_NAME") ?: "1.1.0"
     }
 
     signingConfigs {

@@ -9,27 +9,32 @@ Une alternative libre et sans pub à DroidCam.
 
 ## Installation
 
-1. Télécharge la [dernière release](https://github.com/Ghermin/camtel/releases/latest) :
-   - `CamTel.apk` → installe-le sur le téléphone (autorise l'installation d'applis inconnues) ;
-   - `CamTel.exe` → enregistre-le où tu veux sur le PC (un seul fichier, rien d'autre à installer).
-2. Lance `CamTel.exe`. Au premier lancement, il propose d'installer la webcam virtuelle
-   « CamTel Camera » (Windows demande l'autorisation administrateur une seule fois).
-3. Ouvre l'app **CamTel** sur le téléphone.
-4. Dans CamTel.exe, choisis le téléphone dans la liste puis **Connecter**.
-5. Dans ton appli de visio, sélectionne la caméra **CamTel Camera**.
+**PC (Windows 10/11 64 bits)** : télécharge
+[`CamTel.exe`](https://github.com/Ghermin/camtel/releases/latest/download/CamTel.exe) et lance-le.
 
-### Wi-Fi
+- Si SmartScreen affiche « Windows a protégé votre ordinateur » (l'exe n'est pas signé) :
+  **Informations complémentaires → Exécuter quand même**.
+- CamTel s'installe tout seul : menu Démarrer, démarrage avec Windows (icône près de l'horloge).
+  Il installe ensuite la webcam « CamTel Camera » (une autorisation administrateur Windows).
 
-Le PC et le téléphone doivent être sur le même réseau. Le téléphone est détecté automatiquement ;
-sinon tape l'adresse affichée en haut de l'app (ex. `192.168.1.42`). Au premier lancement, autorise
-CamTel dans le pare-feu Windows (réseaux privés) pour la détection automatique.
+**Téléphone (Android 8+)**, au choix :
 
-### USB (plus fluide, sans Wi-Fi)
+- **Wi-Fi** : scanne le QR code affiché par CamTel sur le PC avec l'appareil photo, installe
+  l'APK, ouvre l'app. Le PC trouve le téléphone sur le réseau et se connecte tout seul, sans
+  réglage de pare-feu.
+- **USB** : branche le téléphone avec le
+  [débogage USB](https://developer.android.com/studio/debug/dev-options) activé, puis accepte
+  « Autoriser le débogage USB ? ». CamTel installe ou met à jour l'app sur le téléphone, donne
+  l'accès caméra, la lance et se connecte. Les outils Android (`adb`) sont téléchargés depuis
+  Google au premier lancement s'ils manquent. L'app du téléphone explique comment activer le
+  débogage USB (touche le cadre d'infos en haut à gauche).
 
-1. Active le **débogage USB** sur le téléphone (Options pour les développeurs).
-2. Installe `adb` sur le PC ([Android platform-tools](https://developer.android.com/tools/releases/platform-tools))
-   et mets-le dans le `PATH` (CamTel le trouve aussi dans `%LOCALAPPDATA%\Android\Sdk\platform-tools`).
-3. Branche le téléphone : il apparaît comme `USB · <modèle>` dans la liste.
+Ensuite, choisis la caméra **CamTel Camera** dans ton appli de visio. Si l'appli était déjà
+ouverte avant l'installation, quitte-la complètement et relance-la.
+
+CamTel préfère le câble quand il est branché, repasse en Wi-Fi si tu le débranches, et relance
+l'app du téléphone si elle a été fermée pendant que le câble est branché. Pour une adresse IP
+précise, tape-la dans le sélecteur de téléphone puis appuie sur Entrée.
 
 ## Fonctionnalités
 
@@ -56,14 +61,14 @@ la batterie). La diffusion continue appli en arrière-plan ou écran verrouillé
 
 ## Désinstallation
 
-Menu **Webcam virtuelle → Désinstaller** dans CamTel.exe, puis supprime `CamTel.exe`.
+Menu **⋮ → Désinstaller CamTel de ce PC** : supprime la webcam virtuelle, le raccourci, le démarrage automatique et les réglages.
 Les réglages sont dans `%APPDATA%\CamTel`, le pilote dans `%ProgramData%\CamTel`.
 
 ## Fonctionnement
 
 ```
 Téléphone (CameraX → JPEG)  ──HTTP MJPEG :4747──▶  CamTel.exe  ──mémoire partagée──▶  filtre DirectShow « CamTel Camera »  ──▶  Zoom, Teams…
-            └── balise UDP :4748 (détection auto)
+        ▲ le PC sonde le réseau local sur le port 4747 (ou adb forward en USB)
 ```
 
 API HTTP du téléphone :

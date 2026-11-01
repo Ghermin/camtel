@@ -2,14 +2,16 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Reflection;
 using System.Text.Json;
+using QRCoder;
 
 namespace CamTel;
 
 public sealed class MainForm : Form
 {
     private const int PhonePort = 4747;
-    private const int UsbLocalPort = 4747;
     private const string RepoUrl = "https://github.com/Ghermin/camtel";
+    private const string ApkUrl = RepoUrl + "/releases/latest/download/CamTel.apk";
+    public const string ShowEventName = @"Local\CamTel.Show";
 
     private static readonly Color Bg = Color.FromArgb(22, 26, 36);
     private static readonly Color Panel = Color.FromArgb(32, 37, 50);
@@ -24,7 +26,13 @@ public sealed class MainForm : Form
     private readonly Settings _settings = Settings.Load();
     private readonly FramePipeline _pipeline;
     private readonly PhoneDiscovery _discovery = new();
-    private readonly List<Phone> _usbPhones = new();
+    private readonly UsbPhones _usb = new();
+    private readonly bool _startHidden;
+    private readonly bool _firstRun;
+    private bool _userDisconnected;
+    private int _failures;
+    private string _hint = "";
+    private DateTime _hintAt;
 
     private CancellationTokenSource? _connectCts;
     private Phone? _connected;
@@ -81,10 +89,13 @@ public sealed class MainForm : Form
     private readonly NotifyIcon _tray = new();
     private readonly ContextMenuStrip _moreMenu = new();
     private readonly System.Windows.Forms.Timer _statusTimer = new() { Interval = 1000 };
-    private readonly System.Windows.Forms.Timer _usbTimer = new() { Interval = 3000 };
+    private readonly System.Windows.Forms.Timer _autoTimer = new() { Interval = 1000 };
+    private readonly Panel _welcome = new() { BackColor = Color.FromArgb(28, 33, 46), Visible = false };
 
-    public MainForm()
+    public MainForm(bool startHidden = false, bool firstRun = false)
     {
+        _startHidden = startHidden;
+        _firstRun = firstRun;
         Text = "CamTel";
         Icon = LoadIcon();
         MinimumSize = new Size(900, 560);
@@ -108,8 +119,45 @@ public sealed class MainForm : Form
 
         _discovery.Changed += () => BeginInvokeSafe(RefreshPhoneList);
         _discovery.Start();
+        _usb.Changed += () => BeginInvokeSafe(RefreshPhoneList);
+        _usb.Status += s => BeginInvokeSafe(() => { _hint = s; _hintAt = DateTime.UtcNow; });
+        _usb.Start();
         _statusTimer.Start();
-        _usbTimer.Start();
+        _autoTimer.Start();
+        ListenForSignals();
+    }
+
+    /// <summary>Other CamTel processes can ask this one to show itself or to quit (updates).</summary>
+    private void ListenForSignals()
+    {
+        var show = new EventWaitHandle(false, EventResetMode.AutoReset, ShowEventName);
+        var quit = new EventWaitHandle(false, EventResetMode.AutoReset, AppInstaller.QuitEventName);
+        var t = new Thread(() =>
+        {
+            var handles = new WaitHandle[] { show, quit };
+            while (true)
+            {
+                if (WaitHandle.WaitAny(handles) == 0)
+                {
+                    BeginInvokeSafe(ShowFromTray);
+                    continue;
+                }
+                BeginInvokeSafe(() => { _reallyClose = true; Close(); });
+                return;
+            }
+        }) { IsBackground = true, Name = "CamTel signals" };
+        t.Start();
+    }
+
+    protected override void SetVisibleCore(bool value)
+    {
+        // Started with Windows: stay in the notification area until the user opens the window.
+        if (_startHidden && !IsHandleCreated)
+        {
+            CreateHandle();
+            value = false;
+        }
+        base.SetVisibleCore(value);
     }
 
     // ---- Layout -------------------------------------------------------------
@@ -172,7 +220,11 @@ public sealed class MainForm : Form
         status.Controls.Add(_camLabel);
 
         var previewHost = new Panel { Dock = DockStyle.Fill, Padding = new Padding(12, 0, 0, 0), BackColor = Bg };
+        BuildWelcome();
+        previewHost.Controls.Add(_welcome);
         previewHost.Controls.Add(_preview);
+        previewHost.Resize += (_, _) => CenterWelcome();
+        _welcome.BringToFront();
 
         Controls.Add(previewHost);
         Controls.Add(side);
@@ -184,7 +236,6 @@ public sealed class MainForm : Form
         foreach (var o in OutputSizes) _outputBox.Items.Add(o.Label);
         var outIdx = Array.FindIndex(OutputSizes, o => o.W == _settings.OutputWidth && o.H == _settings.OutputHeight);
         _outputBox.SelectedIndex = outIdx < 0 ? 1 : outIdx;
-        if (_settings.LastHost.Length > 0 && !_settings.LastUsb) _phoneBox.Text = _settings.LastHost;
 
         _tips.SetToolTip(_switchBtn, "Caméra avant / arrière");
         _tips.SetToolTip(_torchBtn, "Flash");
@@ -201,9 +252,15 @@ public sealed class MainForm : Form
         _moreMenu.Items.Add("Installer / réparer la webcam virtuelle", null, (_, _) => InstallDriver(force: true));
         _moreMenu.Items.Add("Désinstaller la webcam virtuelle", null, (_, _) => UninstallDriver());
         _moreMenu.Items.Add(new ToolStripSeparator());
-        var auto = new ToolStripMenuItem("Connexion auto au démarrage") { Checked = _settings.AutoConnect, CheckOnClick = true };
+        var auto = new ToolStripMenuItem("Connexion automatique") { Checked = _settings.AutoConnect, CheckOnClick = true };
         auto.CheckedChanged += (_, _) => { _settings.AutoConnect = auto.Checked; _settings.Save(); };
         _moreMenu.Items.Add(auto);
+        var startup = new ToolStripMenuItem("Lancer avec Windows (près de l'horloge)")
+        {
+            Checked = AppInstaller.StartWithWindows, CheckOnClick = true, Enabled = AppInstaller.IsRunningInstalled,
+        };
+        startup.CheckedChanged += (_, _) => AppInstaller.StartWithWindows = startup.Checked;
+        _moreMenu.Items.Add(startup);
         _moreMenu.Items.Add(new ToolStripSeparator());
         _moreMenu.Items.Add("Télécharger l'app Android", null, (_, _) => OpenUrl(RepoUrl + "/releases/latest"));
         _moreMenu.Items.Add("Page GitHub", null, (_, _) => OpenUrl(RepoUrl));
@@ -211,9 +268,12 @@ public sealed class MainForm : Form
             $"CamTel {Assembly.GetExecutingAssembly().GetName().Version?.ToString(3)}\n\n" +
             "Utilise ton téléphone Android comme webcam.\n" +
             "Caméra virtuelle basée sur softcam (MIT).\n\n" + RepoUrl, "À propos de CamTel"));
+        _moreMenu.Items.Add(new ToolStripSeparator());
+        _moreMenu.Items.Add("Désinstaller CamTel de ce PC…", null, (_, _) => UninstallApp());
 
         _tray.Icon = Icon;
         _tray.Text = "CamTel";
+        _tray.Visible = true;
         _tray.ContextMenuStrip = new ContextMenuStrip();
         _tray.ContextMenuStrip.Items.Add("Afficher", null, (_, _) => ShowFromTray());
         _tray.ContextMenuStrip.Items.Add("Quitter", null, (_, _) => { _reallyClose = true; Close(); });
@@ -246,12 +306,12 @@ public sealed class MainForm : Form
     {
         _connectBtn.Click += (_, _) =>
         {
-            if (_connectCts != null) Disconnect();
+            if (_connectCts != null) Disconnect(byUser: true);
             else ConnectToSelection();
         };
         _phoneBox.KeyDown += (_, e) =>
         {
-            if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; Disconnect(); ConnectToSelection(); }
+            if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; Disconnect(byUser: true); ConnectToSelection(); }
         };
         _moreBtn.Click += (_, _) => _moreMenu.Show(_moreBtn, new Point(0, _moreBtn.Height));
 
@@ -311,56 +371,45 @@ public sealed class MainForm : Form
             _settings.Save();
         };
         _statusTimer.Tick += (_, _) => UpdateStatus();
-        _usbTimer.Tick += async (_, _) => await RefreshUsbAsync();
-        Resize += (_, _) =>
-        {
-            if (WindowState == FormWindowState.Minimized && _streaming)
-            {
-                Hide();
-                _tray.Visible = true;
-                _tray.ShowBalloonTip(2000, "CamTel", "CamTel continue en arrière-plan.", ToolTipIcon.Info);
-            }
-        };
+        _autoTimer.Tick += (_, _) => AutoConnect();
+        _camLabel.Cursor = Cursors.Hand;
+        _camLabel.Click += (_, _) => { if (!DriverInstaller.IsInstalled) InstallDriver(force: true); };
     }
 
-    protected override async void OnShown(EventArgs e)
+    protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
-        EnsureDriver();
-        await RefreshUsbAsync();
-        if (_settings.AutoConnect && _settings.LastHost.Length > 0)
+        if (_firstRun && AppInstaller.IsRunningInstalled && !_settings.Installed)
         {
-            if (_settings.LastUsb)
-            {
-                var usb = _usbPhones.FirstOrDefault(p => p.Host == _settings.LastHost) ?? _usbPhones.FirstOrDefault();
-                if (usb != null) Connect(usb);
-            }
-            else
-            {
-                Connect(new Phone(_settings.LastHost, _settings.LastHost, PhonePort, false));
-            }
+            // First launch of a freshly installed copy: start with Windows by default.
+            AppInstaller.StartWithWindows = true;
+            _settings.Installed = true;
+            _settings.Save();
         }
+        BeginInvoke(EnsureDriver);
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
-        if (!_reallyClose && e.CloseReason == CloseReason.UserClosing && _streaming)
+        if (!_reallyClose && e.CloseReason == CloseReason.UserClosing)
         {
-            var r = MessageBox.Show(this,
-                "Une connexion est active. Quitter CamTel coupera la webcam.\n\nQuitter quand même ? (Non = réduire près de l'horloge)",
-                "CamTel", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
-            if (r == DialogResult.Cancel) { e.Cancel = true; return; }
-            if (r == DialogResult.No)
+            // Closing the window keeps CamTel running next to the clock, like other webcam apps.
+            e.Cancel = true;
+            Hide();
+            if (!_settings.TrayTipShown)
             {
-                e.Cancel = true;
-                WindowState = FormWindowState.Minimized;
-                return;
+                _tray.ShowBalloonTip(4000, "CamTel continue près de l'horloge",
+                    "La webcam reste disponible. Clic droit sur l'icône → Quitter pour fermer CamTel.", ToolTipIcon.Info);
+                _settings.TrayTipShown = true;
+                _settings.Save();
             }
+            return;
         }
         _connectCts?.Cancel();
         _pipeline.Preview -= OnPreview;
         _pipeline.Dispose();
         _discovery.Dispose();
+        _usb.Dispose();
         _tray.Visible = false;
         _tray.Dispose();
         base.OnFormClosing(e);
@@ -371,27 +420,16 @@ public sealed class MainForm : Form
         Show();
         WindowState = FormWindowState.Normal;
         Activate();
-        _tray.Visible = false;
     }
 
     // ---- Driver -------------------------------------------------------------
 
     private void EnsureDriver()
     {
-        if (!DriverInstaller.HasEmbeddedDriver())
-        {
-            if (!DriverInstaller.IsInstalled)
-                MessageBox.Show(this, "Cette version de CamTel ne contient pas le pilote de webcam virtuelle.",
-                    "CamTel", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
+        if (!DriverInstaller.HasEmbeddedDriver()) return;
         if (DriverInstaller.IsInstalled && !DriverInstaller.NeedsUpdate()) return;
-
-        var msg = DriverInstaller.IsInstalled
-            ? "Une nouvelle version de la webcam virtuelle « CamTel Camera » est disponible. La mettre à jour ?"
-            : "Pour que Zoom, Teams, Discord, OBS, Meet… voient ton téléphone, CamTel doit installer la webcam virtuelle « CamTel Camera ».\n\nWindows va demander l'autorisation administrateur. Installer maintenant ?";
-        if (MessageBox.Show(this, msg, "CamTel", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
-            InstallDriver(force: false);
+        // One UAC prompt, no extra question: the virtual camera is the whole point of the app.
+        InstallDriver(force: false);
     }
 
     private void InstallDriver(bool force)
@@ -400,15 +438,21 @@ public sealed class MainForm : Form
         if (DriverInstaller.RunElevated(install: true))
         {
             _pipeline.ResetCamera();
-            MessageBox.Show(this,
-                "Webcam virtuelle « CamTel Camera » installée.\nSi une appli était déjà ouverte (navigateur, Teams…), relance-la pour qu'elle la voie.",
-                "CamTel", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            _tray.ShowBalloonTip(4000, "Webcam « CamTel Camera » prête",
+                "Si une appli de visio était déjà ouverte, relance-la pour qu'elle la voie.", ToolTipIcon.Info);
         }
-        else
-        {
-            MessageBox.Show(this, "L'installation de la webcam virtuelle a échoué ou a été annulée.", "CamTel",
-                MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        }
+    }
+
+    private void UninstallApp()
+    {
+        if (MessageBox.Show(this,
+                "Désinstaller CamTel de ce PC ?\n\nLa webcam virtuelle, le raccourci, le démarrage automatique et les réglages seront supprimés.",
+                "CamTel", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+        _connectCts?.Cancel();
+        if (DriverInstaller.IsInstalled) DriverInstaller.RunElevated(install: false);
+        AppInstaller.Uninstall();
+        _reallyClose = true;
+        Close();
     }
 
     private void UninstallDriver()
@@ -421,32 +465,44 @@ public sealed class MainForm : Form
 
     // ---- Phones -------------------------------------------------------------
 
-    private async Task RefreshUsbAsync()
-    {
-        if (Adb.FindAdb() == null) return;
-        var devices = await Adb.DevicesAsync();
-        var phones = devices.Select(d => new Phone(d.Model, d.Serial, PhonePort, true)).ToList();
-        if (phones.SequenceEqual(_usbPhones)) return;
-        _usbPhones.Clear();
-        _usbPhones.AddRange(phones);
-        RefreshPhoneList();
-    }
-
     private void RefreshPhoneList()
     {
         var typed = _phoneBox.SelectedItem == null ? _phoneBox.Text : null;
         var selected = _phoneBox.SelectedItem as Phone;
         _phoneBox.BeginUpdate();
         _phoneBox.Items.Clear();
-        foreach (var p in _usbPhones.Concat(_discovery.Phones)) _phoneBox.Items.Add(p);
+        foreach (var p in _usb.Phones.Concat(_discovery.Phones)) _phoneBox.Items.Add(p);
         _phoneBox.EndUpdate();
         if (selected != null && _phoneBox.Items.Contains(selected)) _phoneBox.SelectedItem = selected;
         else if (!string.IsNullOrEmpty(typed)) _phoneBox.Text = typed;
         else if (_phoneBox.Items.Count > 0 && _connectCts == null) _phoneBox.SelectedIndex = 0;
+        if (_connected != null) _phoneBox.Text = _connected.ToString();
+        AutoConnect();
+    }
+
+    /// <summary>Connects on its own: USB first, then the last used phone, then any phone found.</summary>
+    private void AutoConnect()
+    {
+        _discovery.Eager = _connectCts == null;
+        if (!_settings.AutoConnect || _userDisconnected) return;
+        var usb = _usb.Phones;
+        var wifi = _discovery.Phones;
+        if (_connectCts != null)
+        {
+            // Prefer the cable when the same phone gets plugged in while on Wi-Fi.
+            if (_connected is { Usb: false } && usb.FirstOrDefault(u => u.Name == _connected.Name) is { } cable)
+                Connect(cable);
+            return;
+        }
+        var pick = usb.FirstOrDefault()
+                   ?? wifi.FirstOrDefault(p => p.Host == _settings.LastHost)
+                   ?? wifi.FirstOrDefault();
+        if (pick != null) Connect(pick);
     }
 
     private void ConnectToSelection()
     {
+        _userDisconnected = false;
         if (_phoneBox.SelectedItem is Phone p)
         {
             Connect(p);
@@ -473,20 +529,23 @@ public sealed class MainForm : Form
 
     private void Connect(Phone phone)
     {
-        Disconnect();
+        Disconnect(byUser: false);
+        _failures = 0;
         _connected = phone;
         _settings.LastHost = phone.Host;
         _settings.LastUsb = phone.Usb;
         _settings.Save();
         _connectBtn.Text = "Déconnecter";
+        _phoneBox.Text = phone.ToString();
         _phoneBox.Enabled = false;
         var cts = new CancellationTokenSource();
         _connectCts = cts;
         _ = ConnectLoopAsync(phone, cts.Token);
     }
 
-    private void Disconnect()
+    private void Disconnect(bool byUser)
     {
+        if (byUser) _userDisconnected = true;
         _connectCts?.Cancel();
         _connectCts = null;
         _connected = null;
@@ -504,17 +563,11 @@ public sealed class MainForm : Form
         {
             var host = phone.Host;
             var port = phone.Port;
-            if (phone.Usb)
+            if (phone.Usb && !await UsbPhones.RefreshForwardAsync(phone))
             {
-                SetLink($"USB : redirection du port vers {phone.Name}…");
-                if (!await Adb.ForwardAsync(phone.Host, UsbLocalPort, phone.Port))
-                {
-                    SetLink("USB : téléphone introuvable (câble branché ? débogage USB autorisé ?)");
-                    if (!await DelayAsync(2000, ct)) return;
-                    continue;
-                }
-                host = "127.0.0.1";
-                port = UsbLocalPort;
+                SetLink("USB : téléphone débranché ?");
+                if (!await GiveUpOrWaitAsync(phone, ct)) return;
+                continue;
             }
 
             var api = new Uri($"http://{host}:{port}/");
@@ -525,11 +578,12 @@ public sealed class MainForm : Form
             {
                 SetLink($"{phone.Name} ne répond pas. L'app CamTel est-elle ouverte sur le téléphone ?");
                 _pipeline.Placeholder = "Ouvre l'app CamTel sur le téléphone";
-                if (!await DelayAsync(2000, ct)) return;
+                if (!await GiveUpOrWaitAsync(phone, ct)) return;
                 continue;
             }
 
             _apiBase = api;
+            _failures = 0;
             BeginInvokeSafe(() => ApplyPhoneStatus(status));
             using var session = CancellationTokenSource.CreateLinkedTokenSource(ct);
             _ = StatusLoopAsync(api, session.Token);
@@ -584,6 +638,22 @@ public sealed class MainForm : Form
             }
             BeginInvokeSafe(() => ApplyPhoneStatus(json));
         }
+    }
+
+    /// <summary>
+    /// After repeated failures with a phone that is no longer detected, drops it so that
+    /// auto-connect can pick another one. Returns false when the loop should stop.
+    /// </summary>
+    private async Task<bool> GiveUpOrWaitAsync(Phone phone, CancellationToken ct)
+    {
+        if (++_failures >= 3 && _settings.AutoConnect && !_usb.Phones.Contains(phone) && !_discovery.Phones.Contains(phone))
+        {
+            BeginInvokeSafe(() => { if (_connected == phone) Disconnect(byUser: false); });
+            return false;
+        }
+        // Plugged in but the app is closed: open it again.
+        if (phone.Usb && _failures == 2) await UsbPhones.LaunchAppAsync(phone);
+        return await DelayAsync(2000, ct);
     }
 
     private static async Task<bool> DelayAsync(int ms, CancellationToken ct)
@@ -676,17 +746,58 @@ public sealed class MainForm : Form
 
     private void SetLink(string text) => BeginInvokeSafe(() => _link = text);
 
+    private void BuildWelcome()
+    {
+        _welcome.Size = new Size(580, 290);
+        var qr = new PictureBox { Size = new Size(230, 230), Location = new Point(24, 30), SizeMode = PictureBoxSizeMode.Zoom };
+        using (var gen = new QRCodeGenerator())
+        using (var data = gen.CreateQrCode(ApkUrl, QRCodeGenerator.ECCLevel.M))
+        {
+            var png = new PngByteQRCode(data).GetGraphic(10);
+            qr.Image = Image.FromStream(new MemoryStream(png));
+        }
+        var title = new Label
+        {
+            Text = "Connecte ton téléphone", AutoSize = true, ForeColor = Color.White,
+            Font = new Font("Segoe UI Semibold", 15f), Location = new Point(272, 28),
+        };
+        var steps = new Label
+        {
+            AutoSize = false, Size = new Size(290, 210), Location = new Point(274, 70), ForeColor = Muted,
+            Font = new Font("Segoe UI", 10f),
+            Text = "1. Scanne ce QR code avec l'appareil photo du téléphone pour installer l'app CamTel.\n\n" +
+                   "2. Ouvre l'app : en Wi-Fi, le PC la trouve et se connecte tout seul.\n\n" +
+                   "Ou branche le téléphone en USB (débogage USB activé) : CamTel installe et lance l'app automatiquement.",
+        };
+        _welcome.Controls.Add(qr);
+        _welcome.Controls.Add(title);
+        _welcome.Controls.Add(steps);
+    }
+
+    private void CenterWelcome()
+    {
+        var host = _welcome.Parent;
+        if (host == null) return;
+        _welcome.Location = new Point(Math.Max(0, (host.Width - _welcome.Width) / 2), Math.Max(0, (host.Height - _welcome.Height) / 2));
+    }
+
     private void UpdateStatus()
     {
         var link = _link;
         if (_streaming && _pipeline.Fps > 0)
             link = $"● Connecté à {_connected?.Name} · {_pipeline.SourceWidth}×{_pipeline.SourceHeight} · {_pipeline.Fps} ips";
         else if (_connectCts == null)
-            link = "Non connecté";
+            link = _hint.Length > 0 && DateTime.UtcNow - _hintAt < TimeSpan.FromSeconds(10) ? _hint : (_userDisconnected ? "Déconnecté" : "Recherche du téléphone (Wi-Fi et USB)…");
         _linkLabel.Text = link;
+        var showWelcome = !_streaming && _connectCts == null;
+        if (_welcome.Visible != showWelcome)
+        {
+            _welcome.Visible = showWelcome;
+            CenterWelcome();
+        }
 
         if (!DriverInstaller.IsInstalled)
-            _camLabel.Text = "Webcam virtuelle non installée (menu ⋮)";
+            _camLabel.Text = "Webcam virtuelle non installée : clique ici";
         else if (!_pipeline.CameraActive)
             _camLabel.Text = "Webcam virtuelle : démarrage…";
         else

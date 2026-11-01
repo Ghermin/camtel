@@ -16,11 +16,13 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.provider.Settings
 import android.view.View
 import android.view.WindowManager
 import android.widget.SeekBar
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
@@ -125,6 +127,7 @@ class MainActivity : AppCompatActivity() {
         binding.btnRes.setOnClickListener {
             service?.setResolution((CamState.resIndex + 1) % CamState.RESOLUTIONS.size)
         }
+        binding.info.setOnClickListener { showHelp() }
         binding.btnFps.setOnClickListener { service?.setNight(!CamState.night) }
         binding.btnBlack.setOnClickListener { service?.setBlackout(true) }
         binding.blackout.setOnClickListener { service?.setBlackout(false) }
@@ -254,10 +257,51 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateInfo() {
-        val ips = Discovery.localIpv4Addresses()
+        val ips = NetInfo.localIpv4Addresses()
         val port = CameraService.HTTP_PORT
         val addr = if (ips.isEmpty()) "Pas de Wi-Fi · USB possible" else ips.joinToString("\n") { "$it:$port" }
         val state = if (CamState.clients > 0) "● PC connecté · ${CamState.fps} ips" else "○ En attente du PC…"
-        binding.info.text = "$addr\n$state · ${CamState.frameWidth}×${CamState.frameHeight}"
+        binding.info.text = "$addr\n$state · ${CamState.frameWidth}×${CamState.frameHeight}\nⓘ Aide connexion"
+    }
+
+    private fun usbDebuggingEnabled(): Boolean =
+        Settings.Global.getInt(contentResolver, Settings.Global.ADB_ENABLED, 0) == 1
+
+    private fun developerOptionsEnabled(): Boolean =
+        Settings.Global.getInt(contentResolver, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0) == 1
+
+    private fun showHelp() {
+        val usb = when {
+            usbDebuggingEnabled() -> "✓ Débogage USB activé : branche le téléphone, c'est tout."
+            developerOptionsEnabled() -> "Active « Débogage USB » dans les options pour les développeurs, puis branche le téléphone."
+            else -> "Active d'abord les options pour les développeurs : dans « À propos du téléphone », " +
+                "touche 7 fois « Numéro de build ». Active ensuite « Débogage USB »."
+        }
+        val message = "PC : télécharge CamTel pour Windows sur\n$PC_URL\n\n" +
+            "Wi-Fi : même réseau que le PC, laisse cette app ouverte. Le PC te trouve et se connecte tout seul.\n\n" +
+            "USB (plus fluide) : $usb\nÀ la première connexion, accepte « Autoriser le débogage USB ? »."
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Connecter au PC")
+            .setMessage(message)
+            .setPositiveButton("OK", null)
+        if (!usbDebuggingEnabled()) {
+            dialog.setNeutralButton(if (developerOptionsEnabled()) "Options développeur" else "À propos du téléphone") { _, _ ->
+                val action = if (developerOptionsEnabled()) Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS
+                else Settings.ACTION_DEVICE_INFO_SETTINGS
+                try {
+                    startActivity(Intent(action))
+                } catch (_: Exception) {
+                    startActivity(Intent(Settings.ACTION_SETTINGS))
+                }
+            }
+        }
+        dialog.setNegativeButton("Lien PC") { _, _ ->
+            startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(PC_URL)))
+        }
+        dialog.show()
+    }
+
+    companion object {
+        private const val PC_URL = "https://github.com/Ghermin/camtel/releases/latest"
     }
 }
