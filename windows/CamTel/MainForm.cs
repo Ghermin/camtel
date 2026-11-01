@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Reflection;
 using System.Text.Json;
 
@@ -10,9 +11,13 @@ public sealed class MainForm : Form
     private const int UsbLocalPort = 4747;
     private const string RepoUrl = "https://github.com/Ghermin/camtel";
 
+    private static readonly Color Bg = Color.FromArgb(22, 26, 36);
+    private static readonly Color Panel = Color.FromArgb(32, 37, 50);
+    private static readonly Color Muted = Color.FromArgb(150, 160, 180);
+
     private static readonly (string Label, int W, int H)[] OutputSizes =
     {
-        ("640 × 480", 640, 480), ("1280 × 720 (HD)", 1280, 720), ("1920 × 1080 (Full HD)", 1920, 1080),
+        ("640 × 480", 640, 480), ("1280 × 720", 1280, 720), ("1920 × 1080", 1920, 1080),
     };
     private static readonly string[] PhoneResolutions = { "640x480", "1280x720", "1920x1080" };
 
@@ -25,30 +30,56 @@ public sealed class MainForm : Form
     private Phone? _connected;
     private Uri? _apiBase;
     private volatile bool _streaming;
-    private bool _updatingUi;
     private Image? _previewImage;
     private bool _reallyClose;
+    private string _link = "Non connecté";
+
+    // Phone state, as last reported by the phone.
+    private bool _front, _torch, _hasFlash = true, _mirror, _blackout, _night;
+    private double _exposureMin = -2, _exposureMax = 2;
+    private int _resIndex = 1;
+    private bool _draggingZoom, _draggingQuality, _draggingExposure, _applyingStatus;
 
     // UI
-    private readonly ComboBox _phoneBox = new() { DropDownStyle = ComboBoxStyle.DropDown, Width = 300 };
-    private readonly Button _connectBtn = new() { Text = "Connecter", AutoSize = true };
+    private readonly ComboBox _phoneBox = new()
+    {
+        DropDownStyle = ComboBoxStyle.DropDown, Width = 320, FlatStyle = FlatStyle.Flat,
+        BackColor = Panel, ForeColor = Color.White,
+    };
+    private readonly Button _connectBtn = new()
+    {
+        Text = "Connecter", AutoSize = true, FlatStyle = FlatStyle.Flat, BackColor = IconButton.Accent,
+        ForeColor = Color.White, Padding = new Padding(10, 2, 10, 2), Margin = new Padding(8, 0, 0, 0),
+    };
+    private readonly IconButton _moreBtn = new(Icons.More) { Size = new Size(36, 36) };
     private readonly PictureBox _preview = new()
     {
         Dock = DockStyle.Fill, BackColor = Color.Black, SizeMode = PictureBoxSizeMode.Zoom,
     };
-    private readonly Button _cameraBtn = new() { Text = "Caméra : arrière", AutoSize = true };
-    private readonly CheckBox _torchBox = new() { Text = "Flash", AutoSize = true };
-    private readonly ComboBox _phoneResBox = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 140 };
-    private readonly TrackBar _qualityBar = new() { Minimum = 30, Maximum = 100, Value = 80, TickFrequency = 10, Width = 180 };
-    private readonly TrackBar _zoomBar = new() { Minimum = 0, Maximum = 100, Value = 0, TickFrequency = 10, Width = 180 };
-    private readonly ComboBox _outputBox = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 180 };
-    private readonly ComboBox _rotationBox = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 80 };
-    private readonly CheckBox _mirrorBox = new() { Text = "Miroir", AutoSize = true };
-    private readonly CheckBox _fillBox = new() { Text = "Remplir (rogner)", AutoSize = true };
-    private readonly CheckBox _autoBox = new() { Text = "Connexion auto au démarrage", AutoSize = true };
-    private readonly ToolStripStatusLabel _linkLabel = new() { Spring = true, TextAlign = ContentAlignment.MiddleLeft };
-    private readonly ToolStripStatusLabel _camLabel = new() { TextAlign = ContentAlignment.MiddleRight };
+    private readonly IconButton _switchBtn = new(Icons.Switch);
+    private readonly IconButton _torchBtn = new(Icons.FlashOff);
+    private readonly IconButton _mirrorBtn = new(Icons.Flip);
+    private readonly IconButton _resBtn = new(null, "720p");
+    private readonly IconButton _fpsBtn = new(null, "30 ips") { Font = new Font("Segoe UI Semibold", 8.5f) };
+    private readonly IconButton _blackBtn = new(Icons.Dark);
+    private readonly IconButton _rotateBtn = new(Icons.Rotate);
+    private readonly IconButton _fillBtn = new(Icons.Crop);
+    private readonly TrackBar _zoomBar = new() { Minimum = 0, Maximum = 100, TickStyle = TickStyle.None, Width = 160, BackColor = Bg };
+    private readonly Label _zoomLabel = new() { AutoSize = true, ForeColor = Color.White, Text = "0 %", Margin = new Padding(0, 6, 18, 0) };
+    private readonly TrackBar _exposureBar = new() { Minimum = 0, Maximum = 100, Value = 50, TickStyle = TickStyle.None, Width = 160, BackColor = Bg };
+    private readonly Label _exposureLabel = new() { AutoSize = true, ForeColor = Color.White, Text = "+0,0 EV", Margin = new Padding(0, 6, 18, 0) };
+    private readonly TrackBar _qualityBar = new() { Minimum = 30, Maximum = 100, Value = 80, TickStyle = TickStyle.None, Width = 140, BackColor = Bg };
+    private readonly Label _qualityLabel = new() { AutoSize = true, ForeColor = Color.White, Text = "80", Margin = new Padding(0, 6, 18, 0) };
+    private readonly ComboBox _outputBox = new()
+    {
+        DropDownStyle = ComboBoxStyle.DropDownList, Width = 120, FlatStyle = FlatStyle.Flat,
+        BackColor = Panel, ForeColor = Color.White,
+    };
+    private readonly Label _linkLabel = new() { AutoSize = true, ForeColor = Color.White };
+    private readonly Label _camLabel = new() { AutoSize = true, ForeColor = Muted, Dock = DockStyle.Right };
+    private readonly ToolTip _tips = new();
     private readonly NotifyIcon _tray = new();
+    private readonly ContextMenuStrip _moreMenu = new();
     private readonly System.Windows.Forms.Timer _statusTimer = new() { Interval = 1000 };
     private readonly System.Windows.Forms.Timer _usbTimer = new() { Interval = 3000 };
 
@@ -57,20 +88,23 @@ public sealed class MainForm : Form
         Text = "CamTel";
         Icon = LoadIcon();
         MinimumSize = new Size(900, 560);
-        Size = new Size(1100, 680);
+        Size = new Size(1120, 700);
         StartPosition = FormStartPosition.CenterScreen;
         Font = new Font("Segoe UI", 9.5f);
+        BackColor = Bg;
+        ForeColor = Color.White;
 
         _pipeline = new FramePipeline(_settings.OutputWidth, _settings.OutputHeight)
         {
             Rotation = _settings.Rotation,
-            Mirror = _settings.Mirror,
             Fill = _settings.Fill,
         };
         _pipeline.Preview += OnPreview;
 
         BuildUi();
         WireEvents();
+        RenderPhoneState();
+        RenderPcState();
 
         _discovery.Changed += () => BeginInvokeSafe(RefreshPhoneList);
         _discovery.Start();
@@ -82,83 +116,101 @@ public sealed class MainForm : Form
 
     private void BuildUi()
     {
-        var menu = new MenuStrip();
-        var camMenu = new ToolStripMenuItem("Webcam virtuelle");
-        camMenu.DropDownItems.Add("Installer / réparer", null, (_, _) => InstallDriver(force: true));
-        camMenu.DropDownItems.Add("Désinstaller", null, (_, _) => UninstallDriver());
-        var helpMenu = new ToolStripMenuItem("Aide");
-        helpMenu.DropDownItems.Add("Page GitHub", null, (_, _) => OpenUrl(RepoUrl));
-        helpMenu.DropDownItems.Add("Télécharger l'app Android", null, (_, _) => OpenUrl(RepoUrl + "/releases/latest"));
-        helpMenu.DropDownItems.Add("À propos", null, (_, _) => MessageBox.Show(this,
-            $"CamTel {Assembly.GetExecutingAssembly().GetName().Version?.ToString(3)}\n\n" +
-            "Utilise ton téléphone Android comme webcam.\n" +
-            "Caméra virtuelle basée sur softcam (MIT).\n\n" + RepoUrl, "À propos de CamTel"));
-        menu.Items.Add(camMenu);
-        menu.Items.Add(helpMenu);
-
-        var top = new FlowLayoutPanel
+        // Top bar: phone picker + connect + menu.
+        var top = new TableLayoutPanel
         {
-            Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(10, 8, 10, 4), WrapContents = false,
+            Dock = DockStyle.Top, Height = 52, ColumnCount = 3, Padding = new Padding(12, 8, 12, 6), BackColor = Bg,
         };
-        top.Controls.Add(new Label { Text = "Téléphone :", AutoSize = true, Margin = new Padding(0, 7, 6, 0) });
-        top.Controls.Add(_phoneBox);
-        top.Controls.Add(_connectBtn);
-        top.Controls.Add(new Label
-        {
-            Text = "Choisis un téléphone détecté (Wi-Fi ou USB) ou tape son adresse IP.",
-            AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(10, 7, 0, 0),
-        });
+        top.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        top.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        var picker = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = Padding.Empty };
+        picker.Controls.Add(new Label { Text = "Téléphone", AutoSize = true, ForeColor = Muted, Margin = new Padding(0, 7, 8, 0) });
+        picker.Controls.Add(_phoneBox);
+        picker.Controls.Add(_connectBtn);
+        top.Controls.Add(picker, 0, 0);
+        top.Controls.Add(new Label(), 1, 0);
+        top.Controls.Add(_moreBtn, 2, 0);
 
+        // Right column: same buttons as on the phone, then PC-only output options.
         var side = new FlowLayoutPanel
         {
-            Dock = DockStyle.Right, Width = 260, FlowDirection = FlowDirection.TopDown, WrapContents = false,
-            AutoScroll = true, Padding = new Padding(10, 6, 10, 6),
+            Dock = DockStyle.Right, Width = 80, FlowDirection = FlowDirection.TopDown, WrapContents = false,
+            Padding = new Padding(12, 4, 12, 4), BackColor = Bg, AutoScroll = true,
         };
-        side.Controls.Add(Header("Téléphone"));
-        side.Controls.Add(_cameraBtn);
-        side.Controls.Add(_torchBox);
-        side.Controls.Add(Caption("Résolution du téléphone"));
-        side.Controls.Add(_phoneResBox);
-        side.Controls.Add(Caption("Qualité JPEG"));
-        side.Controls.Add(_qualityBar);
-        side.Controls.Add(Caption("Zoom"));
-        side.Controls.Add(_zoomBar);
-        side.Controls.Add(Header("Webcam PC (« CamTel Camera »)"));
-        side.Controls.Add(Caption("Format de sortie"));
-        side.Controls.Add(_outputBox);
-        side.Controls.Add(Caption("Rotation"));
-        side.Controls.Add(_rotationBox);
-        side.Controls.Add(_mirrorBox);
-        side.Controls.Add(_fillBox);
-        side.Controls.Add(Header("Démarrage"));
-        side.Controls.Add(_autoBox);
+        side.Controls.Add(SectionLabel("Tél."));
+        foreach (var b in new[] { _switchBtn, _torchBtn, _mirrorBtn, _resBtn, _fpsBtn, _blackBtn }) side.Controls.Add(b);
+        side.Controls.Add(SectionLabel("PC"));
+        side.Controls.Add(_rotateBtn);
+        side.Controls.Add(_fillBtn);
 
-        var previewHost = new Panel { Dock = DockStyle.Fill, Padding = new Padding(10, 4, 0, 10) };
+        // Bottom bar: zoom / quality / output size.
+        var bottom = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Bottom, Height = 46, WrapContents = false, Padding = new Padding(12, 6, 12, 0), BackColor = Bg,
+        };
+        bottom.Controls.Add(new PictureBox
+        {
+            Size = new Size(22, 22), Margin = new Padding(0, 4, 4, 0), Image = RenderIcon(Icons.Zoom, 22),
+        });
+        bottom.Controls.Add(_zoomBar);
+        bottom.Controls.Add(_zoomLabel);
+        bottom.Controls.Add(new PictureBox
+        {
+            Size = new Size(22, 22), Margin = new Padding(0, 4, 4, 0), Image = RenderIcon(Icons.Brightness, 22),
+        });
+        bottom.Controls.Add(_exposureBar);
+        bottom.Controls.Add(_exposureLabel);
+        bottom.Controls.Add(Caption("Qualité"));
+        bottom.Controls.Add(_qualityBar);
+        bottom.Controls.Add(_qualityLabel);
+        bottom.Controls.Add(Caption("Sortie webcam"));
+        bottom.Controls.Add(_outputBox);
+
+        var status = new Panel { Dock = DockStyle.Bottom, Height = 28, Padding = new Padding(12, 5, 12, 0), BackColor = Panel };
+        status.Controls.Add(_linkLabel);
+        status.Controls.Add(_camLabel);
+
+        var previewHost = new Panel { Dock = DockStyle.Fill, Padding = new Padding(12, 0, 0, 0), BackColor = Bg };
         previewHost.Controls.Add(_preview);
-
-        var status = new StatusStrip();
-        status.Items.Add(_linkLabel);
-        status.Items.Add(_camLabel);
 
         Controls.Add(previewHost);
         Controls.Add(side);
+        Controls.Add(bottom);
         Controls.Add(top);
-        Controls.Add(menu);
         Controls.Add(status);
-        MainMenuStrip = menu;
 
-        _phoneResBox.Items.AddRange(PhoneResolutions);
-        _phoneResBox.SelectedIndex = 1;
+        _connectBtn.FlatAppearance.BorderSize = 0;
         foreach (var o in OutputSizes) _outputBox.Items.Add(o.Label);
         var outIdx = Array.FindIndex(OutputSizes, o => o.W == _settings.OutputWidth && o.H == _settings.OutputHeight);
         _outputBox.SelectedIndex = outIdx < 0 ? 1 : outIdx;
-        _rotationBox.Items.AddRange(new object[] { "0°", "90°", "180°", "270°" });
-        _rotationBox.SelectedIndex = ((_settings.Rotation / 90) % 4 + 4) % 4;
-        _mirrorBox.Checked = _settings.Mirror;
-        _fillBox.Checked = _settings.Fill;
-        _autoBox.Checked = _settings.AutoConnect;
         if (_settings.LastHost.Length > 0 && !_settings.LastUsb) _phoneBox.Text = _settings.LastHost;
-        SetPhoneControlsEnabled(false);
+
+        _tips.SetToolTip(_switchBtn, "Caméra avant / arrière");
+        _tips.SetToolTip(_torchBtn, "Flash");
+        _tips.SetToolTip(_mirrorBtn, "Miroir (sur le téléphone et la webcam)");
+        _tips.SetToolTip(_resBtn, "Résolution du téléphone");
+        _tips.SetToolTip(_fpsBtn, "30 ips (fluide) ou mode nuit (plus lumineux, moins fluide)");
+        _tips.SetToolTip(_exposureBar, "Luminosité (compensation d'exposition)");
+        _tips.SetToolTip(_blackBtn, "Éteindre l'écran du téléphone (la caméra continue)");
+        _tips.SetToolTip(_rotateBtn, "Pivoter l'image de la webcam");
+        _tips.SetToolTip(_fillBtn, "Remplir le cadre (rogne au lieu d'ajouter des bandes noires)");
+        _tips.SetToolTip(_outputBox, "Résolution annoncée par « CamTel Camera » aux applis");
+        _tips.SetToolTip(_moreBtn, "Menu");
+
+        _moreMenu.Items.Add("Installer / réparer la webcam virtuelle", null, (_, _) => InstallDriver(force: true));
+        _moreMenu.Items.Add("Désinstaller la webcam virtuelle", null, (_, _) => UninstallDriver());
+        _moreMenu.Items.Add(new ToolStripSeparator());
+        var auto = new ToolStripMenuItem("Connexion auto au démarrage") { Checked = _settings.AutoConnect, CheckOnClick = true };
+        auto.CheckedChanged += (_, _) => { _settings.AutoConnect = auto.Checked; _settings.Save(); };
+        _moreMenu.Items.Add(auto);
+        _moreMenu.Items.Add(new ToolStripSeparator());
+        _moreMenu.Items.Add("Télécharger l'app Android", null, (_, _) => OpenUrl(RepoUrl + "/releases/latest"));
+        _moreMenu.Items.Add("Page GitHub", null, (_, _) => OpenUrl(RepoUrl));
+        _moreMenu.Items.Add("À propos", null, (_, _) => MessageBox.Show(this,
+            $"CamTel {Assembly.GetExecutingAssembly().GetName().Version?.ToString(3)}\n\n" +
+            "Utilise ton téléphone Android comme webcam.\n" +
+            "Caméra virtuelle basée sur softcam (MIT).\n\n" + RepoUrl, "À propos de CamTel"));
 
         _tray.Icon = Icon;
         _tray.Text = "CamTel";
@@ -168,15 +220,27 @@ public sealed class MainForm : Form
         _tray.DoubleClick += (_, _) => ShowFromTray();
     }
 
-    private static Label Header(string text) => new()
+    private static Label SectionLabel(string text) => new()
     {
-        Text = text, AutoSize = true, Font = new Font("Segoe UI Semibold", 10.5f), Margin = new Padding(0, 12, 0, 6),
+        Text = text, AutoSize = false, Width = 46, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Muted,
+        Margin = new Padding(5, 10, 5, 0), Height = 18,
     };
 
     private static Label Caption(string text) => new()
     {
-        Text = text, AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(0, 8, 0, 2),
+        Text = text, AutoSize = true, ForeColor = Muted, Margin = new Padding(0, 6, 4, 0),
     };
+
+    private static Bitmap RenderIcon(string path, int size)
+    {
+        var bmp = new Bitmap(size, size);
+        using var g = Graphics.FromImage(bmp);
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        g.ScaleTransform(size / 24f, size / 24f);
+        using var p = SvgPath.Parse(path);
+        g.FillPath(new SolidBrush(Muted), p);
+        return bmp;
+    }
 
     private void WireEvents()
     {
@@ -189,32 +253,63 @@ public sealed class MainForm : Form
         {
             if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; Disconnect(); ConnectToSelection(); }
         };
-        _cameraBtn.Click += (_, _) => SendControl("camera=toggle");
-        _torchBox.CheckedChanged += (_, _) => { if (!_updatingUi) SendControl("torch=" + (_torchBox.Checked ? "on" : "off")); };
-        _phoneResBox.SelectedIndexChanged += (_, _) => { if (!_updatingUi) SendControl("res=" + _phoneResBox.SelectedItem); };
-        _qualityBar.MouseUp += (_, _) => SendControl("quality=" + _qualityBar.Value);
-        _qualityBar.KeyUp += (_, _) => SendControl("quality=" + _qualityBar.Value);
+        _moreBtn.Click += (_, _) => _moreMenu.Show(_moreBtn, new Point(0, _moreBtn.Height));
+
+        _switchBtn.Click += (_, _) => SendControl("camera=" + (_front ? "back" : "front"));
+        _torchBtn.Click += (_, _) => SendControl("torch=" + (_torch ? "off" : "on"));
+        _mirrorBtn.Click += (_, _) => SendControl("mirror=" + (_mirror ? "off" : "on"));
+        _resBtn.Click += (_, _) => SendControl("res=" + PhoneResolutions[(_resIndex + 1) % PhoneResolutions.Length]);
+        _blackBtn.Click += (_, _) => SendControl("blackout=" + (_blackout ? "off" : "on"));
+        _fpsBtn.Click += (_, _) => SendControl("night=" + (_night ? "off" : "on"));
+        _exposureBar.MouseDown += (_, _) => _draggingExposure = true;
+        _exposureBar.MouseUp += (_, _) => _draggingExposure = false;
+        _exposureBar.ValueChanged += (_, _) =>
+        {
+            var ev = _exposureMin + (_exposureMax - _exposureMin) * _exposureBar.Value / 100.0;
+            _exposureLabel.Text = ev.ToString("+0.0;-0.0;+0.0", CultureInfo.GetCultureInfo("fr-FR")) + " EV";
+            if (!_applyingStatus) SendControl("exposure=" + ev.ToString("0.00", CultureInfo.InvariantCulture));
+        };
+
+        _zoomBar.MouseDown += (_, _) => _draggingZoom = true;
+        _zoomBar.MouseUp += (_, _) => _draggingZoom = false;
         _zoomBar.ValueChanged += (_, _) =>
         {
-            if (!_updatingUi) SendControl("zoom=" + (_zoomBar.Value / 100f).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            _zoomLabel.Text = $"{_zoomBar.Value} %";
+            if (!_applyingStatus)
+                SendControl("zoom=" + (_zoomBar.Value / 100f).ToString(CultureInfo.InvariantCulture));
+        };
+        _qualityBar.MouseDown += (_, _) => _draggingQuality = true;
+        _qualityBar.MouseUp += (_, _) =>
+        {
+            _draggingQuality = false;
+            SendControl("quality=" + _qualityBar.Value);
+        };
+        _qualityBar.ValueChanged += (_, _) => _qualityLabel.Text = _qualityBar.Value.ToString();
+        _qualityBar.KeyUp += (_, _) => { if (!_applyingStatus) SendControl("quality=" + _qualityBar.Value); };
+
+        _rotateBtn.Click += (_, _) =>
+        {
+            _settings.Rotation = (_settings.Rotation + 90) % 360;
+            _pipeline.Rotation = _settings.Rotation;
+            _settings.Save();
+            RenderPcState();
+        };
+        _fillBtn.Click += (_, _) =>
+        {
+            _settings.Fill = !_settings.Fill;
+            _pipeline.Fill = _settings.Fill;
+            _settings.Save();
+            RenderPcState();
         };
         _outputBox.SelectedIndexChanged += (_, _) =>
         {
             var o = OutputSizes[_outputBox.SelectedIndex];
+            if (o.W == _settings.OutputWidth && o.H == _settings.OutputHeight) return;
             _settings.OutputWidth = o.W;
             _settings.OutputHeight = o.H;
             _pipeline.SetOutputSize(o.W, o.H);
             _settings.Save();
         };
-        _rotationBox.SelectedIndexChanged += (_, _) =>
-        {
-            _settings.Rotation = _rotationBox.SelectedIndex * 90;
-            _pipeline.Rotation = _settings.Rotation;
-            _settings.Save();
-        };
-        _mirrorBox.CheckedChanged += (_, _) => { _pipeline.Mirror = _settings.Mirror = _mirrorBox.Checked; _settings.Save(); };
-        _fillBox.CheckedChanged += (_, _) => { _pipeline.Fill = _settings.Fill = _fillBox.Checked; _settings.Save(); };
-        _autoBox.CheckedChanged += (_, _) => { _settings.AutoConnect = _autoBox.Checked; _settings.Save(); };
         _statusTimer.Tick += (_, _) => UpdateStatus();
         _usbTimer.Tick += async (_, _) => await RefreshUsbAsync();
         Resize += (_, _) =>
@@ -252,7 +347,7 @@ public sealed class MainForm : Form
         if (!_reallyClose && e.CloseReason == CloseReason.UserClosing && _streaming)
         {
             var r = MessageBox.Show(this,
-                "Une connexion est active. Quitter CamTel coupera la webcam.\n\nQuitter quand même ? (Non = réduire dans la barre des tâches)",
+                "Une connexion est active. Quitter CamTel coupera la webcam.\n\nQuitter quand même ? (Non = réduire près de l'horloge)",
                 "CamTel", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
             if (r == DialogResult.Cancel) { e.Cancel = true; return; }
             if (r == DialogResult.No)
@@ -320,7 +415,6 @@ public sealed class MainForm : Form
     {
         if (MessageBox.Show(this, "Désinstaller la webcam virtuelle « CamTel Camera » ?", "CamTel",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
-        _pipeline.SetOutputSize(_settings.OutputWidth, _settings.OutputHeight);
         if (DriverInstaller.RunElevated(install: false))
             MessageBox.Show(this, "Webcam virtuelle désinstallée.", "CamTel");
     }
@@ -401,7 +495,7 @@ public sealed class MainForm : Form
         _connectBtn.Text = "Connecter";
         _phoneBox.Enabled = true;
         _pipeline.Placeholder = "En attente du téléphone…";
-        SetPhoneControlsEnabled(false);
+        RenderPhoneState();
     }
 
     private async Task ConnectLoopAsync(Phone phone, CancellationToken ct)
@@ -436,7 +530,9 @@ public sealed class MainForm : Form
             }
 
             _apiBase = api;
-            BeginInvokeSafe(() => { ApplyPhoneStatus(status); SetPhoneControlsEnabled(true); });
+            BeginInvokeSafe(() => ApplyPhoneStatus(status));
+            using var session = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            _ = StatusLoopAsync(api, session.Token);
             try
             {
                 _streaming = true;
@@ -453,11 +549,40 @@ public sealed class MainForm : Form
             finally
             {
                 _streaming = false;
+                session.Cancel();
             }
             if (ct.IsCancellationRequested) return;
             SetLink($"Connexion perdue avec {phone.Name}, nouvelle tentative…");
             _pipeline.Placeholder = "Connexion perdue, reconnexion…";
             if (!await DelayAsync(1500, ct)) return;
+        }
+    }
+
+    /// <summary>Long-polls /status so changes made on the phone show up here immediately.</summary>
+    private async Task StatusLoopAsync(Uri api, CancellationToken ct)
+    {
+        long version = 0;
+        while (!ct.IsCancellationRequested)
+        {
+            var json = await MjpegClient.GetStringAsync(new Uri(api, $"status?since={version}"), ct,
+                TimeSpan.FromSeconds(30));
+            if (ct.IsCancellationRequested) return;
+            if (json == null)
+            {
+                if (!await DelayAsync(1000, ct)) return;
+                continue;
+            }
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                version = doc.RootElement.GetProperty("version").GetInt64();
+            }
+            catch
+            {
+                if (!await DelayAsync(1000, ct)) return;
+                continue;
+            }
+            BeginInvokeSafe(() => ApplyPhoneStatus(json));
         }
     }
 
@@ -478,49 +603,76 @@ public sealed class MainForm : Form
     {
         var api = _apiBase;
         if (api == null) return;
-        var status = await MjpegClient.GetStringAsync(new Uri(api, "control?" + query));
-        if (status != null)
-        {
-            // The phone applies changes asynchronously; read back the settled state.
-            await Task.Delay(400);
-            status = await MjpegClient.GetStringAsync(new Uri(api, "status")) ?? status;
-            ApplyPhoneStatus(status);
-        }
+        // The phone applies the change and the status long-poll brings the new state back.
+        await MjpegClient.GetStringAsync(new Uri(api, "control?" + query));
     }
 
     private void ApplyPhoneStatus(string json)
     {
+        _applyingStatus = true;
         try
         {
             using var doc = JsonDocument.Parse(json);
             var r = doc.RootElement;
-            _updatingUi = true;
-            _cameraBtn.Text = r.GetProperty("camera").GetString() == "front" ? "Caméra : avant" : "Caméra : arrière";
-            _torchBox.Checked = r.GetProperty("torch").GetBoolean();
-            var res = r.GetProperty("resolution").GetString();
-            var idx = Array.IndexOf(PhoneResolutions, res);
-            if (idx >= 0) _phoneResBox.SelectedIndex = idx;
-            _qualityBar.Value = Math.Clamp(r.GetProperty("quality").GetInt32(), _qualityBar.Minimum, _qualityBar.Maximum);
-            _zoomBar.Value = Math.Clamp((int)Math.Round(r.GetProperty("zoom").GetDouble() * 100), 0, 100);
+            _front = r.GetProperty("camera").GetString() == "front";
+            _torch = r.GetProperty("torch").GetBoolean();
+            _hasFlash = !r.TryGetProperty("hasFlash", out var hf) || hf.GetBoolean();
+            _mirror = r.TryGetProperty("mirror", out var m) && m.GetBoolean();
+            _blackout = r.TryGetProperty("blackout", out var bo) && bo.GetBoolean();
+            _night = r.TryGetProperty("night", out var ni) && ni.GetBoolean();
+            if (r.TryGetProperty("exposureMin", out var emin) && r.TryGetProperty("exposureMax", out var emax))
+            {
+                _exposureMin = emin.GetDouble();
+                _exposureMax = emax.GetDouble();
+                var span = _exposureMax - _exposureMin;
+                var ev = r.GetProperty("exposure").GetDouble();
+                if (!_draggingExposure)
+                    _exposureBar.Value = span > 0 ? Math.Clamp((int)Math.Round((ev - _exposureMin) / span * 100), 0, 100) : 50;
+                _exposureLabel.Text = ev.ToString("+0.0;-0.0;+0.0", CultureInfo.GetCultureInfo("fr-FR")) + " EV";
+            }
+            var idx = Array.IndexOf(PhoneResolutions, r.GetProperty("resolution").GetString());
+            if (idx >= 0) _resIndex = idx;
+            if (!_draggingQuality)
+                _qualityBar.Value = Math.Clamp(r.GetProperty("quality").GetInt32(), _qualityBar.Minimum, _qualityBar.Maximum);
+            if (!_draggingZoom)
+                _zoomBar.Value = Math.Clamp((int)Math.Round(r.GetProperty("zoom").GetDouble() * 100), 0, 100);
+            _pipeline.Mirror = _mirror;
         }
         catch
         {
         }
         finally
         {
-            _updatingUi = false;
+            _applyingStatus = false;
         }
+        RenderPhoneState();
     }
 
-    private void SetPhoneControlsEnabled(bool enabled)
+    private void RenderPhoneState()
     {
-        foreach (Control c in new Control[] { _cameraBtn, _torchBox, _phoneResBox, _qualityBar, _zoomBar })
-            c.Enabled = enabled;
+        var on = _apiBase != null;
+        foreach (Control c in new Control[] { _switchBtn, _torchBtn, _mirrorBtn, _resBtn, _fpsBtn, _blackBtn, _zoomBar, _exposureBar, _qualityBar })
+            c.Enabled = on;
+        _torchBtn.Enabled = on && _hasFlash;
+        _switchBtn.Active = on && _front;
+        _torchBtn.Active = on && _torch;
+        _torchBtn.IconPath = _torch ? Icons.FlashOn : Icons.FlashOff;
+        _mirrorBtn.Active = on && _mirror;
+        _blackBtn.Active = on && _blackout;
+        _fpsBtn.Active = on && _night;
+        _fpsBtn.Text = _night ? "Nuit" : "30 ips";
+        _exposureBar.Enabled = on && _exposureMax > _exposureMin;
+        _resBtn.Text = PhoneResolutions[_resIndex].Split('x')[1] + "p";
+    }
+
+    private void RenderPcState()
+    {
+        _rotateBtn.Active = _settings.Rotation != 0;
+        _tips.SetToolTip(_rotateBtn, $"Pivoter l'image de la webcam (actuellement {_settings.Rotation}°)");
+        _fillBtn.Active = _settings.Fill;
     }
 
     // ---- Status / preview ---------------------------------------------------
-
-    private string _link = "Non connecté";
 
     private void SetLink(string text) => BeginInvokeSafe(() => _link = text);
 
@@ -528,18 +680,18 @@ public sealed class MainForm : Form
     {
         var link = _link;
         if (_streaming && _pipeline.Fps > 0)
-            link = $"Connecté à {_connected?.Name} · {_pipeline.SourceWidth}×{_pipeline.SourceHeight} · {_pipeline.Fps} ips";
+            link = $"● Connecté à {_connected?.Name} · {_pipeline.SourceWidth}×{_pipeline.SourceHeight} · {_pipeline.Fps} ips";
         else if (_connectCts == null)
             link = "Non connecté";
         _linkLabel.Text = link;
 
         if (!DriverInstaller.IsInstalled)
-            _camLabel.Text = "Webcam virtuelle non installée (menu Webcam virtuelle)";
+            _camLabel.Text = "Webcam virtuelle non installée (menu ⋮)";
         else if (!_pipeline.CameraActive)
             _camLabel.Text = "Webcam virtuelle : démarrage…";
         else
             _camLabel.Text = _pipeline.CameraInUse
-                ? "« CamTel Camera » utilisée par une appli ●"
+                ? "« CamTel Camera » utilisée par une appli"
                 : "« CamTel Camera » prête";
         _tray.Text = _streaming ? $"CamTel · {_pipeline.Fps} ips" : "CamTel";
     }

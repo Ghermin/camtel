@@ -1,0 +1,10 @@
+<resources>
+    <style name="RoundButton">
+        <item name="android:layout_width">46dp</item>
+        <item name="android:layout_height">46dp</item>
+        <item name="android:layout_margin">3dp</item>
+        <item name="android:background">@drawable/round_btn</item>
+        <item name="android:scaleType">center</item>
+        <item name="android:padding">11dp</item>
+    </style>
+</resources>

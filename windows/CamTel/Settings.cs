@@ -10,7 +10,6 @@ public sealed class Settings
     public int OutputWidth { get; set; } = 1280;
     public int OutputHeight { get; set; } = 720;
     public int Rotation { get; set; }
-    public bool Mirror { get; set; }
     public bool Fill { get; set; }
 
     private static string FilePath => Path.Combine(
