@@ -1,0 +1,8 @@
+* text=auto
+android/gradlew text eol=lf
+*.bat text eol=crlf
+*.sln text eol=crlf
+*.vcxproj text eol=crlf
+*.jar binary
+*.ico binary
+*.dll binary
