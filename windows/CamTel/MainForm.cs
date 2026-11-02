@@ -10,12 +10,14 @@ public sealed class MainForm : Form
 {
     private const int PhonePort = 4747;
     private const string RepoUrl = "https://github.com/Ghermin/camtel";
+    private const string SiteUrl = "https://ghermin.github.io/camtel/";
     private const string ApkUrl = RepoUrl + "/releases/latest/download/CamTel.apk";
     public const string ShowEventName = @"Local\CamTel.Show";
 
-    private static readonly Color Bg = Color.FromArgb(22, 26, 36);
-    private static readonly Color Panel = Color.FromArgb(32, 37, 50);
-    private static readonly Color Muted = Color.FromArgb(150, 160, 180);
+    // Follows the Windows light/dark setting (see ApplyTheme).
+    private static Color Bg => Theme.Bg;
+    private static Color Panel => Theme.Panel;
+    private static Color Muted => Theme.Muted;
 
     private static readonly (string Label, int W, int H)[] OutputSizes =
     {
@@ -68,7 +70,7 @@ public sealed class MainForm : Form
     private readonly IconButton _moreBtn = new(Icons.More) { Size = new Size(36, 36) };
     private readonly PictureBox _preview = new()
     {
-        Dock = DockStyle.Fill, BackColor = Color.Black, SizeMode = PictureBoxSizeMode.Zoom,
+        Dock = DockStyle.Fill, BackColor = Color.Black, SizeMode = PictureBoxSizeMode.Zoom, Tag = "video",
     };
     private readonly IconButton _switchBtn = new(Icons.Switch);
     private readonly IconButton _torchBtn = new(Icons.FlashOff);
@@ -90,13 +92,13 @@ public sealed class MainForm : Form
         BackColor = Panel, ForeColor = Color.White,
     };
     private readonly Label _linkLabel = new() { AutoSize = true, ForeColor = Color.White };
-    private readonly Label _camLabel = new() { AutoSize = true, ForeColor = Muted, Dock = DockStyle.Right };
+    private readonly Label _camLabel = new() { AutoSize = true, ForeColor = Muted, Dock = DockStyle.Right, Tag = "muted" };
     private readonly ToolTip _tips = new();
     private readonly NotifyIcon _tray = new();
     private readonly ContextMenuStrip _moreMenu = new();
     private readonly System.Windows.Forms.Timer _statusTimer = new() { Interval = 1000 };
     private readonly System.Windows.Forms.Timer _autoTimer = new() { Interval = 1000 };
-    private readonly Panel _welcome = new() { BackColor = Color.FromArgb(28, 33, 46), Visible = false };
+    private readonly Panel _welcome = new() { BackColor = Theme.Card, Visible = false, Tag = "card" };
 
     public MainForm(bool startHidden = false, bool firstRun = false, bool updated = false)
     {
@@ -121,6 +123,8 @@ public sealed class MainForm : Form
 
         BuildUi();
         WireEvents();
+        ApplyTheme();
+        Theme.Changed += OnThemeChanged;
         RenderPhoneState();
         RenderPcState();
 
@@ -221,7 +225,7 @@ public sealed class MainForm : Form
         top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         top.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         var picker = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = Padding.Empty };
-        picker.Controls.Add(new Label { Text = "Téléphone", AutoSize = true, ForeColor = Muted, Margin = new Padding(0, 7, 8, 0) });
+        picker.Controls.Add(new Label { Text = "Téléphone", AutoSize = true, ForeColor = Muted, Margin = new Padding(0, 7, 8, 0), Tag = "muted" });
         picker.Controls.Add(_phoneBox);
         picker.Controls.Add(_connectBtn);
         top.Controls.Add(picker, 0, 0);
@@ -247,13 +251,13 @@ public sealed class MainForm : Form
         };
         bottom.Controls.Add(new PictureBox
         {
-            Size = new Size(22, 22), Margin = new Padding(0, 4, 4, 0), Image = RenderIcon(Icons.Zoom, 22),
+            Size = new Size(22, 22), Margin = new Padding(0, 4, 4, 0), Image = RenderIcon(Icons.Zoom, 22), Tag = "icon:" + Icons.Zoom,
         });
         bottom.Controls.Add(_zoomBar);
         bottom.Controls.Add(_zoomLabel);
         bottom.Controls.Add(new PictureBox
         {
-            Size = new Size(22, 22), Margin = new Padding(0, 4, 4, 0), Image = RenderIcon(Icons.Brightness, 22),
+            Size = new Size(22, 22), Margin = new Padding(0, 4, 4, 0), Image = RenderIcon(Icons.Brightness, 22), Tag = "icon:" + Icons.Brightness,
         });
         bottom.Controls.Add(_exposureBar);
         bottom.Controls.Add(_exposureLabel);
@@ -263,7 +267,7 @@ public sealed class MainForm : Form
         bottom.Controls.Add(Caption("Sortie webcam"));
         bottom.Controls.Add(_outputBox);
 
-        var status = new Panel { Dock = DockStyle.Bottom, Height = 28, Padding = new Padding(12, 5, 12, 0), BackColor = Panel };
+        var status = new Panel { Dock = DockStyle.Bottom, Height = 28, Padding = new Padding(12, 5, 12, 0), BackColor = Panel, Tag = "panel" };
         status.Controls.Add(_linkLabel);
         status.Controls.Add(_camLabel);
 
@@ -310,7 +314,7 @@ public sealed class MainForm : Form
         startup.CheckedChanged += (_, _) => AppInstaller.StartWithWindows = startup.Checked;
         _moreMenu.Items.Add(startup);
         _moreMenu.Items.Add(new ToolStripSeparator());
-        _moreMenu.Items.Add("Télécharger l'app Android", null, (_, _) => OpenUrl(RepoUrl + "/releases/latest"));
+        _moreMenu.Items.Add("Page de téléchargement", null, (_, _) => OpenUrl(SiteUrl));
         _moreMenu.Items.Add("Rechercher une mise à jour", null, async (_, _) => await AutoUpdateAsync(manual: true));
         _moreMenu.Items.Add("Page GitHub", null, (_, _) => OpenUrl(RepoUrl));
         _moreMenu.Items.Add("À propos", null, (_, _) => MessageBox.Show(this,
@@ -329,15 +333,80 @@ public sealed class MainForm : Form
         _tray.DoubleClick += (_, _) => ShowFromTray();
     }
 
+    private void OnThemeChanged() => BeginInvokeSafe(ApplyTheme);
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        Theme.ApplyTitleBar(Handle);
+    }
+
+    /// <summary>Re-colours every control for the current Windows theme (light or dark).</summary>
+    private void ApplyTheme()
+    {
+        BackColor = Theme.Bg;
+        ForeColor = Theme.Text;
+        if (IsHandleCreated) Theme.ApplyTitleBar(Handle);
+        Restyle(this);
+        var renderer = new ToolStripProfessionalRenderer(new Theme.MenuColors()) { RoundedEdges = false };
+        foreach (var menu in new[] { _moreMenu, _tray.ContextMenuStrip })
+        {
+            if (menu == null) continue;
+            menu.Renderer = renderer;
+            menu.BackColor = Theme.Panel;
+            foreach (ToolStripItem item in menu.Items) item.ForeColor = Theme.Text;
+        }
+        Invalidate(true);
+    }
+
+    private static void Restyle(Control parent)
+    {
+        foreach (Control c in parent.Controls)
+        {
+            switch (c)
+            {
+                case IconButton:
+                case Button:
+                    break;
+                case Label label:
+                    label.ForeColor = (label.Tag as string) == "muted" ? Theme.Muted : Theme.Text;
+                    break;
+                case ComboBox combo:
+                    combo.BackColor = Theme.Panel;
+                    combo.ForeColor = Theme.Text;
+                    break;
+                case TrackBar track:
+                    track.BackColor = Theme.Bg;
+                    break;
+                case PictureBox pic when pic.Tag is string tag && tag.StartsWith("icon:"):
+                    var old = pic.Image;
+                    pic.Image = RenderIcon(tag[5..], pic.Width);
+                    old?.Dispose();
+                    break;
+                case PictureBox:
+                    break; // video preview and QR code keep their own colours
+                case System.Windows.Forms.Panel panel:
+                    panel.BackColor = (panel.Tag as string) switch
+                    {
+                        "panel" => Theme.Panel,
+                        "card" => Theme.Card,
+                        _ => Theme.Bg,
+                    };
+                    break;
+            }
+            Restyle(c);
+        }
+    }
+
     private static Label SectionLabel(string text) => new()
     {
-        Text = text, AutoSize = false, Width = 46, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Muted,
+        Text = text, AutoSize = false, Width = 46, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Muted, Tag = "muted",
         Margin = new Padding(5, 10, 5, 0), Height = 18,
     };
 
     private static Label Caption(string text) => new()
     {
-        Text = text, AutoSize = true, ForeColor = Muted, Margin = new Padding(0, 6, 4, 0),
+        Text = text, AutoSize = true, ForeColor = Muted, Margin = new Padding(0, 6, 4, 0), Tag = "muted",
     };
 
     private static Bitmap RenderIcon(string path, int size)
@@ -484,6 +553,7 @@ public sealed class MainForm : Form
             }
             return;
         }
+        Theme.Changed -= OnThemeChanged;
         _connectCts?.Cancel();
         _pipeline.Preview -= OnPreview;
         _pipeline.Dispose();
@@ -829,7 +899,7 @@ public sealed class MainForm : Form
     private void BuildWelcome()
     {
         _welcome.Size = new Size(580, 290);
-        var qr = new PictureBox { Size = new Size(230, 230), Location = new Point(24, 30), SizeMode = PictureBoxSizeMode.Zoom };
+        var qr = new PictureBox { Size = new Size(230, 230), Location = new Point(24, 30), SizeMode = PictureBoxSizeMode.Zoom, Tag = "qr" };
         using (var gen = new QRCodeGenerator())
         using (var data = gen.CreateQrCode(ApkUrl, QRCodeGenerator.ECCLevel.M))
         {
@@ -838,12 +908,12 @@ public sealed class MainForm : Form
         }
         var title = new Label
         {
-            Text = "Connecte ton téléphone", AutoSize = true, ForeColor = Color.White,
+            Text = "Connecte ton téléphone", AutoSize = true, ForeColor = Theme.Text,
             Font = new Font("Segoe UI Semibold", 15f), Location = new Point(272, 28),
         };
         var steps = new Label
         {
-            AutoSize = false, Size = new Size(290, 210), Location = new Point(274, 70), ForeColor = Muted,
+            AutoSize = false, Size = new Size(290, 210), Location = new Point(274, 70), ForeColor = Muted, Tag = "muted",
             Font = new Font("Segoe UI", 10f),
             Text = "1. Scanne ce QR code avec l'appareil photo du téléphone pour installer l'app CamTel.\n\n" +
                    "2. Ouvre l'app : en Wi-Fi, le PC la trouve et se connecte tout seul.\n\n" +

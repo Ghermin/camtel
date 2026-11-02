@@ -7,7 +7,7 @@ namespace CamTel;
 /// <summary>Round button drawing a Material icon (or a short caption), like the Android app's buttons.</summary>
 public sealed class IconButton : Control
 {
-    public static readonly Color Accent = Color.FromArgb(47, 128, 237);
+    public static Color Accent => Theme.Accent;
 
     private GraphicsPath? _icon;
     private bool _active;
@@ -74,12 +74,14 @@ public sealed class IconButton : Control
 
         Color bg;
         if (_active) bg = Color.FromArgb(alpha, Accent);
-        else if (_pressed && Enabled) bg = Color.FromArgb(0x60, Color.White);
-        else if (_hover && Enabled) bg = Color.FromArgb(0x40, Color.White);
-        else bg = Color.FromArgb(Enabled ? 0x26 : 0x12, Color.White);
+        else if (_pressed && Enabled) bg = Theme.Overlay(0x50);
+        else if (_hover && Enabled) bg = Theme.Overlay(0x30);
+        else bg = Theme.Overlay(Enabled ? 0x1C : 0x0C);
         using (var b = new SolidBrush(bg)) g.FillEllipse(b, 0, 0, Width - 1, Height - 1);
 
-        using var fg = new SolidBrush(Color.FromArgb(alpha, ForeColor));
+        // White on the blue "active" state, theme text colour otherwise (same as the phone).
+        var ink = _active ? Color.White : Theme.Text;
+        using var fg = new SolidBrush(Color.FromArgb(alpha, ink));
         if (_icon != null)
         {
             var state = g.Save();
@@ -91,7 +93,7 @@ public sealed class IconButton : Control
         }
         else if (Text.Length > 0)
         {
-            TextRenderer.DrawText(g, Text, Font, ClientRectangle, Color.FromArgb(alpha, ForeColor),
+            TextRenderer.DrawText(g, Text, Font, ClientRectangle, Color.FromArgb(alpha, ink),
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
         }
     }

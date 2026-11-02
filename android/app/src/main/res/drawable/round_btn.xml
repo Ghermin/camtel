@@ -1,17 +1,17 @@
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:state_activated="true">
         <shape android:shape="oval">
-            <solid android:color="#2F80ED" />
+            <solid android:color="@color/accent" />
         </shape>
     </item>
     <item android:state_pressed="true">
         <shape android:shape="oval">
-            <solid android:color="#55FFFFFF" />
+            <solid android:color="@color/btn_pressed" />
         </shape>
     </item>
     <item>
         <shape android:shape="oval">
-            <solid android:color="#33FFFFFF" />
+            <solid android:color="@color/btn_idle" />
         </shape>
     </item>
 </selector>

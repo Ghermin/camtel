@@ -2,7 +2,7 @@
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@android:color/black">
+    android:background="@color/cam_bg">
 
     <!-- Shows the very JPEG frames sent to the PC, so both screens always match. -->
     <ImageView
@@ -21,7 +21,7 @@
         android:background="@drawable/pill"
         android:paddingHorizontal="16dp"
         android:paddingVertical="10dp"
-        android:textColor="@android:color/white"
+        android:textColor="@color/on_pill"
         android:textSize="14sp" />
 
     <LinearLayout
@@ -60,7 +60,7 @@
             android:background="@drawable/round_btn"
             android:contentDescription="@string/resolution"
             android:gravity="center"
-            android:textColor="@android:color/white"
+            android:textColor="@color/on_button"
             android:textSize="13sp"
             android:textStyle="bold" />
 
@@ -72,7 +72,7 @@
             android:background="@drawable/round_btn"
             android:contentDescription="@string/night"
             android:gravity="center"
-            android:textColor="@android:color/white"
+            android:textColor="@color/on_button"
             android:textSize="12sp"
             android:textStyle="bold" />
 
@@ -104,7 +104,8 @@
             android:layout_width="22dp"
             android:layout_height="22dp"
             android:contentDescription="@string/zoom"
-            android:src="@drawable/ic_zoom" />
+            android:src="@drawable/ic_zoom"
+            android:tint="@color/on_pill" />
 
         <SeekBar
             android:id="@+id/zoom"
@@ -116,7 +117,7 @@
             android:id="@+id/zoomLabel"
             android:layout_width="48dp"
             android:layout_height="wrap_content"
-            android:textColor="@android:color/white"
+            android:textColor="@color/on_pill"
             android:textSize="13sp" />
 
         <ImageView
@@ -124,7 +125,8 @@
             android:layout_height="22dp"
             android:layout_marginStart="8dp"
             android:contentDescription="@string/exposure"
-            android:src="@drawable/ic_brightness" />
+            android:src="@drawable/ic_brightness"
+            android:tint="@color/on_pill" />
 
         <SeekBar
             android:id="@+id/exposure"
@@ -136,7 +138,7 @@
             android:id="@+id/exposureLabel"
             android:layout_width="64dp"
             android:layout_height="wrap_content"
-            android:textColor="@android:color/white"
+            android:textColor="@color/on_pill"
             android:textSize="13sp" />
     </LinearLayout>
 

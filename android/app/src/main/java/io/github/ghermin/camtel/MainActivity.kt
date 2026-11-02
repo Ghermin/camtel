@@ -303,6 +303,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
-        private const val PC_URL = "https://github.com/Ghermin/camtel/releases/latest"
+        private const val PC_URL = "https://ghermin.github.io/camtel/"
     }
 }

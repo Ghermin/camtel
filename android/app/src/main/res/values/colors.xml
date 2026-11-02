@@ -1,0 +1,9 @@
+<resources>
+    <!-- Light system theme -->
+    <color name="cam_bg">#EEF1F6</color>
+    <color name="pill">#E6FFFFFF</color>
+    <color name="on_pill">#171B26</color>
+    <color name="btn_idle">#14000000</color>
+    <color name="btn_pressed">#33000000</color>
+    <color name="accent">#2F80ED</color>
+</resources>

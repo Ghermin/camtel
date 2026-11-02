@@ -1,0 +1,8 @@
+<resources>
+    <!-- Dark system theme -->
+    <color name="cam_bg">#000000</color>
+    <color name="pill">#99000000</color>
+    <color name="on_pill">#FFFFFF</color>
+    <color name="btn_idle">#33FFFFFF</color>
+    <color name="btn_pressed">#55FFFFFF</color>
+</resources>
