@@ -32,6 +32,13 @@ Une alternative libre et sans pub à DroidCam.
 Ensuite, choisis la caméra **CamTel Camera** dans ton appli de visio. Si l'appli était déjà
 ouverte avant l'installation, quitte-la complètement et relance-la.
 
+**Mises à jour automatiques** : CamTel.exe vérifie GitHub au lancement puis toutes les 6 h,
+télécharge la nouvelle version en arrière-plan et l'installe dès qu'aucune diffusion n'est en
+cours (jamais pendant une visio). L'app du téléphone se met à jour à son ouverture si aucun PC
+n'est connecté ; branchée en USB, c'est le PC qui la met à jour. Si l'app a été installée par le PC
+en USB, ses mises à jour sont silencieuses ; sinon Android demande une confirmation la première
+fois.
+
 CamTel préfère le câble quand il est branché, repasse en Wi-Fi si tu le débranches, et relance
 l'app du téléphone si elle a été fermée pendant que le câble est branché. Pour une adresse IP
 précise, tape-la dans le sélecteur de téléphone puis appuie sur Entrée.
