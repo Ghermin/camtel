@@ -89,8 +89,10 @@ public static class Adb
     public static async Task<bool> ForwardAsync(string serial, int localPort, int remotePort) =>
         await RunAsync($"-s {serial} forward tcp:{localPort} tcp:{remotePort}") != null;
 
-    public static async Task<string?> InstallAsync(string serial, string apk) =>
-        await RunAsync($"-s {serial} install -r \"{apk}\"", TimeSpan.FromMinutes(2));
+    /// <summary>Installs or replaces an APK; <paramref name="installer"/> sets the installer of record.</summary>
+    public static async Task<string?> InstallAsync(string serial, string apk, string? installer = null) =>
+        await RunAsync($"-s {serial} install -r {(installer != null ? $"-i {installer} " : "")}\"{apk}\"",
+            TimeSpan.FromMinutes(2));
 
     private static async Task<string?> RunAsync(string args, TimeSpan? timeout = null)
     {
@@ -206,16 +208,25 @@ public sealed class UsbPhones : IDisposable
 
     private async Task<Phone?> PrepareAsync(Adb.Device d)
     {
-        var installed = await InstalledVersionAsync(d.Serial);
-        var mine = typeof(UsbPhones).Assembly.GetName().Version ?? new Version(1, 0);
-        if (installed == null || installed < new Version(mine.Major, mine.Minor, Math.Max(mine.Build, 0)))
+        var dump = await Adb.ShellAsync(d.Serial, $"dumpsys package {Package}") ?? "";
+        var installed = InstalledVersion(dump);
+        // An app that is its own installer of record can update itself over Wi-Fi without any prompt.
+        var selfInstalled = dump.Contains($"installerPackageName={Package}");
+        var outdated = installed == null || installed < Updater.Current;
+        if (outdated || !selfInstalled)
         {
-            Status?.Invoke(installed == null
-                ? $"Installation de l'app CamTel sur {d.Model}…"
-                : $"Mise à jour de l'app CamTel sur {d.Model}…");
+            Status?.Invoke(installed == null ? $"Installation de l'app CamTel sur {d.Model}…"
+                : outdated ? $"Mise à jour de l'app CamTel sur {d.Model}…"
+                : $"Préparation de CamTel sur {d.Model}…");
             var apk = await DownloadApkAsync();
-            var ok = apk != null && (await Adb.InstallAsync(d.Serial, apk))?.Contains("Success") == true;
-            if (!ok && installed == null)
+            var ok = false;
+            if (apk != null)
+            {
+                // "-i <self>" is refused while the package does not exist yet: plain install first.
+                if (installed == null) await Adb.InstallAsync(d.Serial, apk);
+                ok = (await Adb.InstallAsync(d.Serial, apk, installer: Package))?.Contains("Success") == true;
+            }
+            if (!ok && installed == null && InstalledVersion(await Adb.ShellAsync(d.Serial, $"dumpsys package {Package}") ?? "") == null)
             {
                 Status?.Invoke($"Impossible d'installer l'app sur {d.Model}. Installe-la depuis {ApkUrl}");
                 return null;
@@ -224,10 +235,7 @@ public sealed class UsbPhones : IDisposable
 
         await Adb.ShellAsync(d.Serial, $"pm grant {Package} android.permission.CAMERA");
         await Adb.ShellAsync(d.Serial, $"pm grant {Package} android.permission.POST_NOTIFICATIONS");
-        // Let the app update itself later over Wi-Fi without any prompt: it may install packages,
-        // and it becomes its own installer of record (needed for silent self-updates).
         await Adb.ShellAsync(d.Serial, $"appops set {Package} REQUEST_INSTALL_PACKAGES allow");
-        await Adb.ShellAsync(d.Serial, $"pm set-installer {Package} {Package}");
 
         // Launch the app unless it is already streaming.
         var services = await Adb.ShellAsync(d.Serial, $"dumpsys activity services {Package}/.CameraService") ?? "";
@@ -257,9 +265,8 @@ public sealed class UsbPhones : IDisposable
     public static Task<bool> RefreshForwardAsync(Phone phone) =>
         phone.Serial == null ? Task.FromResult(true) : Adb.ForwardAsync(phone.Serial, phone.Port, PhoneDiscovery.PhonePort);
 
-    private static async Task<Version?> InstalledVersionAsync(string serial)
+    private static Version? InstalledVersion(string dump)
     {
-        var dump = await Adb.ShellAsync(serial, $"dumpsys package {Package}") ?? "";
         var line = dump.Split('\n').Select(l => l.Trim()).FirstOrDefault(l => l.StartsWith("versionName="));
         if (line == null) return null;
         return Version.TryParse(line["versionName=".Length..].Trim(), out var v) ? v : new Version(0, 0);

@@ -27,26 +27,33 @@ import java.net.URL
 object Updater {
     private const val TAG = "CamTelUpdater"
     private const val LATEST_API = "https://api.github.com/repos/Ghermin/camtel/releases/latest"
-    private const val CHECK_INTERVAL_MS = 15 * 60 * 1000L
+    private const val CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000L
     private const val CHANNEL = "camtel_updates"
 
     @Volatile private var running = false
+    // In memory on purpose: every new launch of the app checks again.
+    @Volatile private var lastCheck = 0L
+    private val processStart = System.currentTimeMillis()
+
+    /** Right after launch an update is applied even if a PC already connected (the stream just began). */
+    private fun justLaunched() = System.currentTimeMillis() - processStart < 60_000
 
     fun maybeUpdate(context: Context) {
         if (BuildConfig.DEBUG || running) return
         val prefs = context.getSharedPreferences("camtel", Context.MODE_PRIVATE)
         val now = System.currentTimeMillis()
-        if (now - prefs.getLong("lastUpdateCheck", 0) < CHECK_INTERVAL_MS) return
-        prefs.edit().putLong("lastUpdateCheck", now).apply()
+        if (now - lastCheck < CHECK_INTERVAL_MS) return
+        lastCheck = now
         running = true
         val app = context.applicationContext
         Thread({
             try {
                 val release = latest() ?: return@Thread
-                if (!isNewer(release.version, BuildConfig.VERSION_NAME) || CamState.clients > 0) return@Thread
+                if (!isNewer(release.version, BuildConfig.VERSION_NAME)) return@Thread
+                if (CamState.clients > 0 && !justLaunched()) return@Thread
                 toast(app, "Mise à jour de CamTel vers ${release.version}…")
                 val apk = download(app, release) ?: return@Thread
-                if (CamState.clients > 0) return@Thread // a PC connected meanwhile: try again next launch
+                if (CamState.clients > 0 && !justLaunched()) return@Thread
                 prefs.edit().putString("updatingTo", release.version).apply()
                 install(app, apk)
             } catch (e: Exception) {
