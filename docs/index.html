@@ -3,11 +3,22 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#10131b" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f4f6fa" media="(prefers-color-scheme: light)">
   <title>CamTel – ton téléphone comme webcam</title>
   <meta name="description" content="Utilise ton téléphone Android comme webcam sur Windows, en Wi-Fi ou en USB. Gratuit, open source, mises à jour automatiques.">
   <meta property="og:title" content="CamTel – ton téléphone comme webcam">
   <meta property="og:description" content="Android → webcam Windows, en Wi-Fi ou USB. Gratuit et open source.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://ghermin.github.io/camtel/">
+  <meta property="og:image" content="https://ghermin.github.io/camtel/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="icon" href="favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
   <style>
     :root {
       --bg: #10131b;
@@ -20,6 +31,24 @@
       --accent-2: #5b9bf3;
       --ok: #3ccf8e;
       --radius: 18px;
+      --qr-bg: #fff;
+      color-scheme: dark;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f4f6fa;
+        --panel: #ffffff;
+        --panel-2: #eef1f7;
+        --line: #dde2ec;
+        --text: #171b26;
+        --muted: #5d6679;
+        --accent: #2f80ed;
+        --accent-2: #1f6fd8;
+        --ok: #1fa971;
+        color-scheme: light;
+      }
+      .card, .step, details { box-shadow: 0 1px 3px rgba(20, 30, 60, .06); }
+      .qr { border: 1px solid var(--line); }
     }
     * { box-sizing: border-box; }
     html { -webkit-text-size-adjust: 100%; }
@@ -62,6 +91,7 @@
     .btn { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 20px; padding: 14px 18px;
       background: var(--accent); color: #fff; text-decoration: none; font-weight: 650; font-size: 17px; border-radius: 12px; }
     .btn:hover { background: var(--accent-2); }
+    .step::before { color: #fff; }
     .btn svg { width: 20px; height: 20px; }
     .meta { margin-top: 10px; font-size: 13px; color: var(--muted); text-align: center; min-height: 1.4em; }
 

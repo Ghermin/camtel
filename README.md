@@ -1,4 +1,6 @@
-# CamTel
+<p align="center"><img src="docs/icon-192.png" width="96" alt="CamTel"></p>
+
+<h1 align="center">CamTel</h1>
 
 Utilise ton téléphone Android comme webcam sur Windows, en Wi-Fi ou en USB.
 Une alternative libre et sans pub à DroidCam.
