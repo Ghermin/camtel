@@ -27,7 +27,8 @@ internal static class Program
             return 0;
         }
 
-        Application.Run(new MainForm(startHidden: args.Contains("--minimized"), firstRun: args.Contains("--first-run")));
+        Application.Run(new MainForm(startHidden: args.Contains("--minimized"), firstRun: args.Contains("--first-run"),
+            updated: args.Contains("--updated")));
         return 0;
     }
 }

@@ -224,6 +224,10 @@ public sealed class UsbPhones : IDisposable
 
         await Adb.ShellAsync(d.Serial, $"pm grant {Package} android.permission.CAMERA");
         await Adb.ShellAsync(d.Serial, $"pm grant {Package} android.permission.POST_NOTIFICATIONS");
+        // Let the app update itself later over Wi-Fi without any prompt: it may install packages,
+        // and it becomes its own installer of record (needed for silent self-updates).
+        await Adb.ShellAsync(d.Serial, $"appops set {Package} REQUEST_INSTALL_PACKAGES allow");
+        await Adb.ShellAsync(d.Serial, $"pm set-installer {Package} {Package}");
 
         // Launch the app unless it is already streaming.
         var services = await Adb.ShellAsync(d.Serial, $"dumpsys activity services {Package}/.CameraService") ?? "";

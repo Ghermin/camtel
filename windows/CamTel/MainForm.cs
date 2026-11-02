@@ -29,6 +29,11 @@ public sealed class MainForm : Form
     private readonly UsbPhones _usb = new();
     private readonly bool _startHidden;
     private readonly bool _firstRun;
+    private readonly bool _updated;
+    private readonly System.Windows.Forms.Timer _updateTimer = new() { Interval = 60_000 };
+    private DateTime _nextUpdateCheck = DateTime.UtcNow.AddSeconds(20);
+    private string? _pendingUpdate;
+    private bool _checkingUpdate;
     private bool _userDisconnected;
     private int _failures;
     private string _hint = "";
@@ -92,10 +97,11 @@ public sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer _autoTimer = new() { Interval = 1000 };
     private readonly Panel _welcome = new() { BackColor = Color.FromArgb(28, 33, 46), Visible = false };
 
-    public MainForm(bool startHidden = false, bool firstRun = false)
+    public MainForm(bool startHidden = false, bool firstRun = false, bool updated = false)
     {
         _startHidden = startHidden;
         _firstRun = firstRun;
+        _updated = updated;
         Text = "CamTel";
         Icon = LoadIcon();
         MinimumSize = new Size(900, 560);
@@ -124,7 +130,48 @@ public sealed class MainForm : Form
         _usb.Start();
         _statusTimer.Start();
         _autoTimer.Start();
+        _updateTimer.Tick += async (_, _) => await AutoUpdateAsync(manual: false);
+        _updateTimer.Start();
         ListenForSignals();
+    }
+
+    /// <summary>
+    /// Checks GitHub at startup and every 6 hours. A newer exe is downloaded in the background and
+    /// swapped in as soon as no phone is streaming, so a video call is never cut.
+    /// </summary>
+    private async Task AutoUpdateAsync(bool manual)
+    {
+        if (!AppInstaller.IsRunningInstalled || _checkingUpdate) return;
+        if (_pendingUpdate != null)
+        {
+            if (!_streaming) Updater.Apply(_pendingUpdate, hidden: !Visible);
+            return;
+        }
+        if (!manual && DateTime.UtcNow < _nextUpdateCheck) return;
+        _nextUpdateCheck = DateTime.UtcNow.AddHours(6);
+        _checkingUpdate = true;
+        try
+        {
+            var release = await Updater.CheckAsync();
+            if (release == null)
+            {
+                if (manual)
+                    MessageBox.Show(this, $"CamTel {Updater.Current} est à jour.", "CamTel",
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            _pendingUpdate = await Updater.DownloadAsync(release);
+            if (_pendingUpdate == null) return;
+            if (_streaming)
+                _tray.ShowBalloonTip(4000, $"Mise à jour CamTel {release.Version} prête",
+                    "Elle s'installera automatiquement à la fin de la diffusion.", ToolTipIcon.Info);
+            else
+                Updater.Apply(_pendingUpdate, hidden: !Visible);
+        }
+        finally
+        {
+            _checkingUpdate = false;
+        }
     }
 
     /// <summary>Other CamTel processes can ask this one to show itself or to quit (updates).</summary>
@@ -263,6 +310,7 @@ public sealed class MainForm : Form
         _moreMenu.Items.Add(startup);
         _moreMenu.Items.Add(new ToolStripSeparator());
         _moreMenu.Items.Add("Télécharger l'app Android", null, (_, _) => OpenUrl(RepoUrl + "/releases/latest"));
+        _moreMenu.Items.Add("Rechercher une mise à jour", null, async (_, _) => await AutoUpdateAsync(manual: true));
         _moreMenu.Items.Add("Page GitHub", null, (_, _) => OpenUrl(RepoUrl));
         _moreMenu.Items.Add("À propos", null, (_, _) => MessageBox.Show(this,
             $"CamTel {Assembly.GetExecutingAssembly().GetName().Version?.ToString(3)}\n\n" +
@@ -379,6 +427,12 @@ public sealed class MainForm : Form
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
+        if (_updated)
+        {
+            Updater.CleanUp();
+            _tray.ShowBalloonTip(4000, $"CamTel mis à jour ({Updater.Current})",
+                "La nouvelle version est installée.", ToolTipIcon.Info);
+        }
         if (_firstRun && AppInstaller.IsRunningInstalled && !_settings.Installed)
         {
             // First launch of a freshly installed copy: start with Windows by default.

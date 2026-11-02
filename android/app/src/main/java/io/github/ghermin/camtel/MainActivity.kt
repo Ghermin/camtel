@@ -180,6 +180,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        Updater.maybeUpdate(this)
         mainHandler.post(infoUpdater)
     }
 
