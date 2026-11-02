@@ -46,7 +46,8 @@ class MainActivity : AppCompatActivity() {
     private var previewIndex = 0
     private val drawPending = AtomicBoolean(false)
     private val previewSink: (ByteArray) -> Unit = sink@{ jpeg ->
-        if (!drawPending.compareAndSet(false, true)) return@sink
+        // Black screen: nothing to show, skip the decode.
+        if (CamState.blackout || !drawPending.compareAndSet(false, true)) return@sink
         try {
             val opts = BitmapFactory.Options().apply {
                 // The phone only needs a light preview; the PC still gets the full-quality frame.
@@ -118,7 +119,6 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         hideSystemBars()
 
         binding.btnSwitch.setOnClickListener { service?.setFront(!CamState.front) }
@@ -248,6 +248,10 @@ class MainActivity : AppCompatActivity() {
 
         // The stream itself is never mirrored; the PC mirrors it when the setting is on, so do the same here.
         binding.preview.scaleX = if (CamState.mirror) -1f else 1f
+
+        // Keep the screen on only while a PC is watching; otherwise let it sleep (battery).
+        if (CamState.clients > 0) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         binding.blackout.visibility = if (CamState.blackout) View.VISIBLE else View.GONE
         window.attributes = window.attributes.apply {

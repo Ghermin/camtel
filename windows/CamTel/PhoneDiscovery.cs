@@ -31,8 +31,11 @@ public sealed class PhoneDiscovery : IDisposable
 
     public event Action? Changed;
 
-    /// <summary>When false (e.g. while streaming), scans run less often.</summary>
-    public volatile bool Eager = true;
+    /// <summary>
+    /// Time between LAN scans. Each scan wakes every phone's Wi-Fi radio, so MainForm keeps it
+    /// short only while the window is open and no phone is connected.
+    /// </summary>
+    public volatile int IntervalMs = 4000;
 
     public IReadOnlyList<Phone> Phones
     {
@@ -46,7 +49,10 @@ public sealed class PhoneDiscovery : IDisposable
     public void Start() => _ = Loop();
 
     /// <summary>Requests an immediate scan (e.g. when the user opens the phone list).</summary>
-    public void ScanNow() => _wake.Release();
+    public void ScanNow()
+    {
+        if (_wake.CurrentCount == 0) _wake.Release();
+    }
 
     private readonly SemaphoreSlim _wake = new(0);
 
@@ -67,7 +73,7 @@ public sealed class PhoneDiscovery : IDisposable
             }
             try
             {
-                await _wake.WaitAsync(Eager ? 3000 : 20000, _cts.Token);
+                await _wake.WaitAsync(IntervalMs, _cts.Token);
             }
             catch (OperationCanceledException)
             {
@@ -108,7 +114,7 @@ public sealed class PhoneDiscovery : IDisposable
                 _phones[p.Host] = (p, DateTime.UtcNow);
             }
             // Keep a phone for one missed scan before dropping it.
-            var stale = _phones.Where(kv => DateTime.UtcNow - kv.Value.Seen > TimeSpan.FromSeconds(Eager ? 10 : 50))
+            var stale = _phones.Where(kv => DateTime.UtcNow - kv.Value.Seen > TimeSpan.FromMilliseconds(IntervalMs * 2.5 + 2000))
                 .Select(kv => kv.Key).ToList();
             foreach (var k in stale) _phones.Remove(k);
             changed |= stale.Count > 0;

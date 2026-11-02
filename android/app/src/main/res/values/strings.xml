@@ -13,6 +13,8 @@
     <string name="permission_needed">CamTel a besoin de la caméra pour fonctionner.</string>
     <string name="channel_name">Diffusion de la caméra</string>
     <string name="notif_title">CamTel diffuse la caméra</string>
-    <string name="notif_text">Touchez pour ouvrir · le PC peut se connecter</string>
+    <string name="notif_text">PC connecté · touchez pour ouvrir</string>
+    <string name="notif_title_idle">CamTel en veille</string>
+    <string name="notif_text_idle">Caméra éteinte jusqu\'à la connexion du PC · arrêt auto après 2 min</string>
     <string name="stop">Arrêter</string>
 </resources>

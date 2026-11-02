@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO.Compression;
+using System.Net.Sockets;
 
 namespace CamTel;
 
@@ -33,8 +34,40 @@ public static class Adb
     }
 
     /// <summary>Returns adb, downloading platform-tools from Google into %LOCALAPPDATA%\CamTel if missing.</summary>
+    /// <summary>True when the adb server was not running before CamTel needed it.</summary>
+    public static bool StartedServer { get; private set; }
+
+    private static bool ServerRunning()
+    {
+        try
+        {
+            using var client = new TcpClient();
+            return client.ConnectAsync("127.0.0.1", 5037).Wait(300) && client.Connected;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Stops the adb server if CamTel started it, so nothing is left running on exit.</summary>
+    public static void StopServerIfOwned()
+    {
+        var adb = FindAdb();
+        if (adb == null || !StartedServer) return;
+        try
+        {
+            using var p = Process.Start(new ProcessStartInfo(adb, "kill-server") { CreateNoWindow = true, UseShellExecute = false });
+            p?.WaitForExit(3000);
+        }
+        catch
+        {
+        }
+    }
+
     public static async Task<string?> EnsureAsync(Action<string> status, CancellationToken ct)
     {
+        StartedServer = !ServerRunning();
         if (FindAdb() is { } found) return found;
         await DownloadLock.WaitAsync(ct);
         try
@@ -167,7 +200,51 @@ public sealed class UsbPhones : IDisposable
             catch
             {
             }
-            if (!await Delay(2000)) return;
+            // Plugging a phone in wakes this loop right away (WM_DEVICECHANGE), so polling can be slow.
+            try
+            {
+                await _wake.WaitAsync(10_000, _cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+        }
+    }
+
+    private readonly SemaphoreSlim _wake = new(0);
+
+    /// <summary>A USB device was plugged or unplugged: look for phones now.</summary>
+    public void PollSoon()
+    {
+        if (_wake.CurrentCount == 0) _wake.Release();
+    }
+
+    /// <summary>Removes our port forwards and stops the adb server if CamTel started it.</summary>
+    public void Shutdown()
+    {
+        _cts.Cancel();
+        if (Adb.StartedServer)
+        {
+            Adb.StopServerIfOwned();
+            return;
+        }
+        foreach (var (serial, port) in _ports)
+        {
+            try
+            {
+                var adb = Adb.FindAdb();
+                if (adb == null) break;
+                using var p = Process.Start(new ProcessStartInfo(adb, $"-s {serial} forward --remove tcp:{port}")
+                {
+                    CreateNoWindow = true,
+                    UseShellExecute = false,
+                });
+                p?.WaitForExit(2000);
+            }
+            catch
+            {
+            }
         }
     }
 

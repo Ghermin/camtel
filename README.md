@@ -71,9 +71,20 @@ Côté PC uniquement : format de sortie de la webcam (640×480, 1280×720, 1920�
 remplir (rogner au lieu des bandes noires), reconnexion automatique, icône près de l'horloge et
 image d'attente quand le téléphone est déconnecté.
 
-Le téléphone affiche exactement les images envoyées au PC (en version allégée pour économiser
-la batterie). La diffusion continue appli en arrière-plan ou écran verrouillé (notification
-« CamTel diffuse la caméra », bouton **Arrêter**). Visionneuse web : `http://<ip-du-tel>:4747/`.
+Le téléphone affiche exactement les images envoyées au PC, en version allégée. La diffusion
+continue quand l'app est en arrière-plan ou que l'écran est verrouillé (notification « CamTel
+diffuse la caméra », bouton **Arrêter**). Visionneuse web : `http://<ip-du-tel>:4747/`.
+
+**Batterie et ressources**
+
+- **Téléphone** : la caméra ne tourne que si un PC reçoit l'image ou si l'app est affichée. Sinon,
+  elle s'éteint (notification « CamTel en veille ») et se rallume dès qu'un PC se connecte.
+- Sans PC depuis 2 minutes et app en arrière-plan, tout s'arrête.
+- **⏻**, ou glisser l'app hors des applis récentes, ferme tout, processus compris.
+- L'écran ne reste allumé que pendant qu'un PC est connecté, et l'aperçu seul tourne à 15 ips.
+- **PC** : quand la fenêtre est cachée, CamTel ne calcule plus d'aperçu, sonde le réseau moins
+  souvent et détecte le branchement USB par événement Windows.
+- **Quitter** (icône près de l'horloge) arrête aussi le serveur adb s'il a été démarré par CamTel.
 
 ## Désinstallation
 
