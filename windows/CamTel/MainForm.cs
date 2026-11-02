@@ -31,7 +31,8 @@ public sealed class MainForm : Form
     private readonly bool _firstRun;
     private readonly bool _updated;
     private readonly System.Windows.Forms.Timer _updateTimer = new() { Interval = 60_000 };
-    private DateTime _nextUpdateCheck = DateTime.UtcNow.AddSeconds(20);
+    private DateTime _nextUpdateCheck = DateTime.UtcNow.AddHours(6);
+    private bool _startupUpdateDone;
     private string? _pendingUpdate;
     private bool _checkingUpdate;
     private bool _userDisconnected;
@@ -441,6 +442,30 @@ public sealed class MainForm : Form
             _settings.Save();
         }
         BeginInvoke(EnsureDriver);
+        _ = StartupUpdateAsync();
+    }
+
+    /// <summary>
+    /// "Update on next launch": before connecting to any phone, look for a newer release and
+    /// install it right away (nothing can be using the webcam yet).
+    /// </summary>
+    private async Task StartupUpdateAsync()
+    {
+        try
+        {
+            if (!AppInstaller.IsRunningInstalled || _updated) return;
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+            var release = await Updater.CheckAsync(cts.Token);
+            if (release == null) return;
+            _hint = $"Mise à jour de CamTel vers {release.Version}…";
+            _hintAt = DateTime.UtcNow.AddMinutes(5);
+            var exe = await Updater.DownloadAsync(release);
+            if (exe != null) Updater.Apply(exe, hidden: !Visible);
+        }
+        finally
+        {
+            _startupUpdateDone = true;
+        }
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
@@ -538,7 +563,8 @@ public sealed class MainForm : Form
     private void AutoConnect()
     {
         _discovery.Eager = _connectCts == null;
-        if (!_settings.AutoConnect || _userDisconnected) return;
+        // Wait for the startup update check so an update never cuts a fresh connection.
+        if (!_startupUpdateDone || !_settings.AutoConnect || _userDisconnected) return;
         var usb = _usb.Phones;
         var wifi = _discovery.Phones;
         if (_connectCts != null)
