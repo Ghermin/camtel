@@ -34,6 +34,21 @@ public sealed class FramePipeline : IDisposable
     public volatile bool Fill;
     public volatile string Placeholder = "En attente du téléphone…";
 
+    /// <summary>False while the window is hidden: no preview copies are made.</summary>
+    public bool PreviewEnabled
+    {
+        get => _previewEnabled;
+        set
+        {
+            _previewEnabled = value;
+            if (value) _placeholderShown = null; // repaint the preview once
+        }
+    }
+
+    private volatile bool _previewEnabled = true;
+    private volatile string? _placeholderShown;
+    private long _lastIdleSend = -10_000;
+
     public int Fps { get; private set; }
     public int SourceWidth { get; private set; }
     public int SourceHeight { get; private set; }
@@ -96,6 +111,7 @@ public sealed class FramePipeline : IDisposable
                 _output?.Dispose();
                 _output = new Bitmap(w, h, PixelFormat.Format24bppRgb);
                 _lastCameraAttempt = -10_000;
+                _placeholderShown = null;
             }
 
             var now = clock.ElapsedMilliseconds;
@@ -105,7 +121,9 @@ public sealed class FramePipeline : IDisposable
                 _camera = VirtualCamera.Create(_output!.Width, _output.Height, 30f);
             }
 
-            _signal.WaitOne(100);
+            // Idle (no phone): wake up rarely; the placeholder only needs a couple of frames per second.
+            var idle = now - _lastFrameAt > 1000;
+            _signal.WaitOne(idle ? 500 : 100);
             now = clock.ElapsedMilliseconds;
 
             byte[]? jpeg;
@@ -116,16 +134,27 @@ public sealed class FramePipeline : IDisposable
             }
 
             var output = _output!;
+            var repainted = true;
             if (jpeg != null)
             {
                 if (!RenderJpeg(jpeg, output)) continue;
                 _lastFrameAt = now;
+                _placeholderShown = null;
                 CountFps(now);
             }
             else if (now - _lastFrameAt > 1000)
             {
                 Fps = 0;
-                RenderPlaceholder(output);
+                if (now - _lastIdleSend < 450) continue;
+                _lastIdleSend = now;
+                // Draw the placeholder only when its text changes; otherwise resend the same image.
+                var text = Placeholder;
+                repainted = text != _placeholderShown;
+                if (repainted)
+                {
+                    RenderPlaceholder(output);
+                    _placeholderShown = text;
+                }
             }
             else
             {
@@ -134,8 +163,7 @@ public sealed class FramePipeline : IDisposable
 
             Send(output);
 
-            // Placeholder previews are throttled; live frames go through at full rate.
-            if (jpeg != null || now - _lastPreviewAt > 500)
+            if (repainted && _previewEnabled && (jpeg != null || now - _lastPreviewAt > 200))
             {
                 _lastPreviewAt = now;
                 var handler = Preview;

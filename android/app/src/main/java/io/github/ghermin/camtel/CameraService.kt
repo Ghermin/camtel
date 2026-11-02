@@ -17,6 +17,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.Process
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureRequest
 import android.util.Log
@@ -67,6 +68,10 @@ class CameraService : LifecycleService(), StreamServer.Controller {
     @Volatile private var previewListener: ((ByteArray) -> Unit)? = null
     private var targetRotation = Surface.ROTATION_90
     private var started = false
+    @Volatile private var stopping = false
+
+    /** Nobody watching (no PC, app not on screen) for a while: shut everything down. */
+    private val idleStop = Runnable { if (!inUse()) shutdown() }
 
     private val jpegBuffer = ByteArrayOutputStream(512 * 1024)
     private var nv21Buffer: ByteArray? = null
@@ -109,7 +114,7 @@ class CameraService : LifecycleService(), StreamServer.Controller {
             val future = ProcessCameraProvider.getInstance(this)
             future.addListener({
                 cameraProvider = future.get()
-                bindCamera()
+                refreshCamera()
             }, ContextCompat.getMainExecutor(this))
         }
         return START_NOT_STICKY
@@ -128,10 +133,32 @@ class CameraService : LifecycleService(), StreamServer.Controller {
         super.onDestroy()
     }
 
-    fun stopEverything() {
+    fun stopEverything() = shutdown()
+
+    /** Swiping CamTel away from the recent apps closes it completely. */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        shutdown()
+        super.onTaskRemoved(rootIntent)
+    }
+
+    /**
+     * Stops camera, server and service, closes the UI, then ends the process so nothing keeps
+     * running (threads, sockets, memory) once CamTel is closed.
+     */
+    private fun shutdown() {
+        if (stopping) return
+        stopping = true
+        main.removeCallbacks(idleStop)
+        cameraProvider?.unbindAll()
+        camera = null
         sendBroadcast(Intent(ACTION_FINISH).setPackage(packageName))
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
+        main.postDelayed({
+            // Clients dropping during shutdown must not leave a stale notification behind.
+            (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(NOTIF_ID)
+            Process.killProcess(Process.myPid())
+        }, 600)
     }
 
     // ---- Notification -----------------------------------------------------
@@ -143,24 +170,34 @@ class CameraService : LifecycleService(), StreamServer.Controller {
                 NotificationChannel(CHANNEL, getString(R.string.channel_name), NotificationManager.IMPORTANCE_LOW)
             )
         }
+        ServiceCompat.startForeground(
+            this, NOTIF_ID, buildNotification(),
+            if (Build.VERSION.SDK_INT >= 30) ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA else 0
+        )
+    }
+
+    private fun updateNotification() {
+        if (!started || stopping) return
+        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(NOTIF_ID, buildNotification())
+    }
+
+    private fun buildNotification(): Notification {
         val open = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
         )
         val stop = PendingIntent.getService(
             this, 1, Intent(this, CameraService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE
         )
-        val notification: Notification = NotificationCompat.Builder(this, CHANNEL)
+        val streaming = CamState.clients > 0
+        return NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_videocam)
-            .setContentTitle(getString(R.string.notif_title))
-            .setContentText(getString(R.string.notif_text))
+            .setContentTitle(getString(if (streaming) R.string.notif_title else R.string.notif_title_idle))
+            .setContentText(getString(if (streaming) R.string.notif_text else R.string.notif_text_idle))
             .setContentIntent(open)
             .setOngoing(true)
+            .setSilent(true)
             .addAction(R.drawable.ic_power, getString(R.string.stop), stop)
             .build()
-        ServiceCompat.startForeground(
-            this, NOTIF_ID, notification,
-            if (Build.VERSION.SDK_INT >= 30) ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA else 0
-        )
     }
 
     // ---- Camera -----------------------------------------------------------
@@ -174,8 +211,31 @@ class CameraService : LifecycleService(), StreamServer.Controller {
         previewListener = listener
         if (rotation != null && rotation != targetRotation) {
             targetRotation = rotation
-            bindCamera()
+            if (camera != null) bindCamera()
         }
+        refreshCamera()
+    }
+
+    /** Someone is watching: a PC is connected or the app is on screen. */
+    private fun inUse() = CamState.clients > 0 || previewListener != null
+
+    /** The camera only runs when its frames go somewhere (a PC, or the visible, non-black preview). */
+    private fun cameraNeeded() = CamState.clients > 0 || (previewListener != null && !CamState.blackout)
+
+    /** Turns the camera on/off as needed and arms the idle shutdown. Main thread. */
+    private fun refreshCamera() {
+        if (stopping) return
+        val need = cameraNeeded()
+        if (need && camera == null) bindCamera()
+        else if (!need && camera != null) {
+            cameraProvider?.unbindAll()
+            camera = null
+            CamState.fps = 0
+            CamState.cameraFps = 0
+        }
+        main.removeCallbacks(idleStop)
+        if (!inUse()) main.postDelayed(idleStop, IDLE_STOP_MS)
+        updateNotification()
     }
 
     /** Picks the AE frame-rate range: fixed 30 fps when smooth, widest range up to 30 in night mode. */
@@ -207,6 +267,12 @@ class CameraService : LifecycleService(), StreamServer.Controller {
     @OptIn(ExperimentalCamera2Interop::class)
     private fun bindCamera() {
         val provider = cameraProvider ?: return
+        if (!cameraNeeded()) {
+            // Settings changed while idle: they apply the next time the camera starts.
+            provider.unbindAll()
+            camera = null
+            return
+        }
         val cameraSelector =
             if (CamState.front) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
         val fpsRange = pickFpsRange(cameraSelector)
@@ -264,7 +330,10 @@ class CameraService : LifecycleService(), StreamServer.Controller {
                 fpsWindowStart = now
             }
             val preview = previewListener
-            if ((server?.clientCount ?: 0) == 0 && preview == null) return
+            val clients = server?.clientCount ?: 0
+            if (clients == 0 && preview == null) return
+            // On-screen preview only: 15 fps is plenty and halves the encoding work.
+            if (clients == 0 && cameraFrameCount % 2 == 1) return
             val t0 = System.nanoTime()
 
             val w = image.width
@@ -429,6 +498,7 @@ class CameraService : LifecycleService(), StreamServer.Controller {
         if (CamState.blackout == on) return
         CamState.blackout = on
         CamState.changed()
+        refreshCamera()
     }
 
     // ---- StreamServer.Controller (network threads) ------------------------
@@ -440,6 +510,7 @@ class CameraService : LifecycleService(), StreamServer.Controller {
     override fun onClientsChanged(count: Int) {
         CamState.clients = count
         CamState.changed()
+        main.post { refreshCamera() }
     }
 
     override fun control(params: Map<String, String>) {
@@ -477,6 +548,7 @@ class CameraService : LifecycleService(), StreamServer.Controller {
         private const val CHANNEL = "camtel"
         private const val NOTIF_ID = 1
         const val HTTP_PORT = 4747
+        private const val IDLE_STOP_MS = 2 * 60 * 1000L
         const val ACTION_STOP = "io.github.ghermin.camtel.STOP"
         const val ACTION_FINISH = "io.github.ghermin.camtel.FINISH"
     }

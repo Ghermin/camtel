@@ -335,6 +335,33 @@ public sealed class MainForm : Form
 
     private void OnThemeChanged() => BeginInvokeSafe(ApplyTheme);
 
+    protected override void WndProc(ref Message m)
+    {
+        const int WM_DEVICECHANGE = 0x0219;
+        if (m.Msg == WM_DEVICECHANGE) _usb.PollSoon();
+        base.WndProc(ref m);
+    }
+
+    protected override void OnVisibleChanged(EventArgs e)
+    {
+        base.OnVisibleChanged(e);
+        UpdatePreviewEnabled();
+    }
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        UpdatePreviewEnabled();
+    }
+
+    /// <summary>No preview copies while the window is hidden or minimized.</summary>
+    private void UpdatePreviewEnabled()
+    {
+        if (_pipeline == null) return;
+        _pipeline.PreviewEnabled = Visible && WindowState != FormWindowState.Minimized;
+        if (Visible) _discovery.ScanNow();
+    }
+
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
@@ -558,7 +585,7 @@ public sealed class MainForm : Form
         _pipeline.Preview -= OnPreview;
         _pipeline.Dispose();
         _discovery.Dispose();
-        _usb.Dispose();
+        _usb.Shutdown();
         _tray.Visible = false;
         _tray.Dispose();
         base.OnFormClosing(e);
@@ -632,7 +659,8 @@ public sealed class MainForm : Form
     /// <summary>Connects on its own: USB first, then the last used phone, then any phone found.</summary>
     private void AutoConnect()
     {
-        _discovery.Eager = _connectCts == null;
+        // Scan often only when someone is looking for a phone; each scan wakes the phones' Wi-Fi.
+        _discovery.IntervalMs = _connectCts != null ? 60_000 : Visible ? 4_000 : 15_000;
         // Wait for the startup update check so an update never cuts a fresh connection.
         if (!_startupUpdateDone || !_settings.AutoConnect || _userDisconnected) return;
         var usb = _usb.Phones;
