@@ -3,6 +3,8 @@
 Utilise ton téléphone Android comme webcam sur Windows, en Wi-Fi ou en USB.
 Une alternative libre et sans pub à DroidCam.
 
+**➜ Téléchargement : https://ghermin.github.io/camtel/** (toujours la dernière version)
+
 - **App Android** : filme avec la caméra arrière ou avant et diffuse le flux sur le réseau.
 - **CamTel.exe** (Windows) : reçoit le flux et le publie comme une vraie webcam,
   **« CamTel Camera »**, visible dans Zoom, Teams, Discord, OBS, Google Meet (Chrome/Edge), Skype…
