@@ -1,45 +1,16 @@
-# Generates the download page's PNG icons and social preview image (docs/).
+# Generates the download page's social preview image (docs/og.png).
 # Usage: powershell -File scripts/gen-web-images.ps1
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
 $docs = Join-Path (Split-Path -Parent $PSScriptRoot) 'docs'
-$blue = [System.Drawing.Color]::FromArgb(47, 128, 237)
 
+# The icons themselves (SVG, PNG, ICO, Android) come from the playground:
+# bored-dev-playground/brand/icons/camtel.svg, then "node build.js camtel" in bored-dev-playground/brand.
+$icon = [System.Drawing.Image]::FromFile((Join-Path $docs 'icon-512.png'))
 function Draw-Logo([System.Drawing.Graphics]$g, [float]$x, [float]$y, [float]$size) {
-    $u = $size / 108.0
-    $g.SmoothingMode = 'AntiAlias'
-    $r = 24 * $u; $d = 2 * $r
-    $path = New-Object System.Drawing.Drawing2D.GraphicsPath
-    $path.AddArc($x, $y, $d, $d, 180, 90)
-    $path.AddArc($x + $size - $d, $y, $d, $d, 270, 90)
-    $path.AddArc($x + $size - $d, $y + $size - $d, $d, $d, 0, 90)
-    $path.AddArc($x, $y + $size - $d, $d, $d, 90, 90)
-    $path.CloseFigure()
-    $g.FillPath((New-Object System.Drawing.SolidBrush $blue), $path)
-    $white = [System.Drawing.Brushes]::White
-    $body = New-Object System.Drawing.Drawing2D.GraphicsPath
-    $body.AddRectangle((New-Object System.Drawing.RectangleF ($x + 30 * $u), ($y + 40 * $u), (36 * $u), (28 * $u)))
-    $g.FillPath($white, $body)
-    $lens = [System.Drawing.PointF[]]@(
-        (New-Object System.Drawing.PointF ($x + 64 * $u), ($y + 48 * $u)),
-        (New-Object System.Drawing.PointF ($x + 76 * $u), ($y + 42 * $u)),
-        (New-Object System.Drawing.PointF ($x + 76 * $u), ($y + 66 * $u)),
-        (New-Object System.Drawing.PointF ($x + 64 * $u), ($y + 60 * $u)))
-    $g.FillPolygon($white, $lens)
-    $g.FillEllipse((New-Object System.Drawing.SolidBrush $blue), ($x + 41 * $u), ($y + 47 * $u), (14 * $u), (14 * $u))
+    $g.InterpolationMode = 'HighQualityBicubic'
+    $g.DrawImage($icon, $x, $y, $size, $size)
 }
-
-function Save-Icon([int]$size, [string]$name) {
-    $bmp = New-Object System.Drawing.Bitmap $size, $size
-    $g = [System.Drawing.Graphics]::FromImage($bmp)
-    Draw-Logo $g 0 0 $size
-    $bmp.Save((Join-Path $docs $name), [System.Drawing.Imaging.ImageFormat]::Png)
-    $g.Dispose(); $bmp.Dispose()
-}
-
-Save-Icon 180 'apple-touch-icon.png'
-Save-Icon 192 'icon-192.png'
-Save-Icon 512 'icon-512.png'
 
 # Social preview (1200x630).
 $bmp = New-Object System.Drawing.Bitmap 1200, 630
@@ -56,5 +27,5 @@ $g.DrawString('ta webcam Windows', $sub, (New-Object System.Drawing.SolidBrush (
 $bmp.Save((Join-Path $docs 'og.png'), [System.Drawing.Imaging.ImageFormat]::Png)
 $g.Dispose(); $bmp.Dispose()
 
-Copy-Item (Join-Path (Split-Path -Parent $PSScriptRoot) 'windows\CamTel\camtel.ico') (Join-Path $docs 'favicon.ico') -Force
+$icon.Dispose()
 Get-ChildItem $docs | Select-Object Name, Length
