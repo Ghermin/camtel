@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using Microsoft.Win32;
 
 namespace CamTel;
@@ -47,6 +48,7 @@ public static class AppInstaller
                 }
             }
             CreateShortcut();
+            RefreshIcons();
             Process.Start(new ProcessStartInfo(InstalledExe, string.Join(' ', args)) { UseShellExecute = false });
             return true;
         }
@@ -70,6 +72,42 @@ public static class AppInstaller
         {
         }
     }
+
+    /// <summary>
+    /// Windows keeps an exe's icon in its cache: after an update that changes it, the Start menu, desktop
+    /// and taskbar shortcuts would keep showing the old one. Ask Explorer to read them again.
+    /// </summary>
+    private static void RefreshIcons()
+    {
+        try
+        {
+            var paths = new[]
+            {
+                InstalledExe,
+                ShortcutPath,
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "CamTel.lnk"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    @"Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\CamTel.lnk"),
+            };
+            foreach (var path in paths)
+                if (File.Exists(path)) SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, path, IntPtr.Zero);
+            SHChangeNotify(SHCNE_ASSOCCHANGED, 0, null, IntPtr.Zero);
+            var ie4uinit = Path.Combine(Environment.SystemDirectory, "ie4uinit.exe"); // clears the icon cache
+            if (File.Exists(ie4uinit))
+                Process.Start(new ProcessStartInfo(ie4uinit, "-show") { CreateNoWindow = true, UseShellExecute = false });
+        }
+        catch
+        {
+        }
+    }
+
+    private const int SHCNE_UPDATEITEM = 0x00002000;
+    private const int SHCNE_ASSOCCHANGED = 0x08000000;
+    private const uint SHCNF_PATHW = 0x0005;
+    private const uint SHCNF_FLUSHNOWAIT = 0x3000;
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern void SHChangeNotify(int eventId, uint flags, string? item1, IntPtr item2);
 
     private static void CreateShortcut()
     {
