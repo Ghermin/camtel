@@ -11,6 +11,7 @@ public sealed class MainForm : Form
     private const int PhonePort = 4747;
     private const string RepoUrl = "https://github.com/Ghermin/camtel";
     private const string SiteUrl = "https://ghermin.github.io/camtel/";
+    private const string PlaygroundUrl = "https://ghermin.github.io/";
     private const string ApkUrl = RepoUrl + "/releases/latest/download/CamTel.apk";
     public const string ShowEventName = @"Local\CamTel.Show";
 
@@ -93,6 +94,11 @@ public sealed class MainForm : Form
     };
     private readonly Label _linkLabel = new() { AutoSize = true, ForeColor = Color.White };
     private readonly Label _camLabel = new() { AutoSize = true, ForeColor = Muted, Dock = DockStyle.Right, Tag = "muted" };
+    private readonly Label _sigLabel = new()
+    {
+        AutoSize = true, ForeColor = Muted, Dock = DockStyle.Right, Tag = "muted", Cursor = Cursors.Hand,
+        Text = "un projet du bored dev playground", Font = new Font("Consolas", 8f), Padding = new Padding(16, 2, 0, 0),
+    };
     private readonly ToolTip _tips = new();
     private readonly NotifyIcon _tray = new();
     private readonly ContextMenuStrip _moreMenu = new();
@@ -270,6 +276,11 @@ public sealed class MainForm : Form
         var status = new Panel { Dock = DockStyle.Bottom, Height = 28, Padding = new Padding(12, 5, 12, 0), BackColor = Panel, Tag = "panel" };
         status.Controls.Add(_linkLabel);
         status.Controls.Add(_camLabel);
+        // Lien discret vers le playground, tout à droite de la barre d'état.
+        status.Controls.Add(_sigLabel);
+        _sigLabel.Click += (_, _) => OpenUrl(PlaygroundUrl);
+        _sigLabel.MouseEnter += (_, _) => _sigLabel.ForeColor = Theme.Text;
+        _sigLabel.MouseLeave += (_, _) => _sigLabel.ForeColor = Theme.Muted;
 
         var previewHost = new Panel { Dock = DockStyle.Fill, Padding = new Padding(12, 0, 0, 0), BackColor = Bg };
         BuildWelcome();
