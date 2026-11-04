@@ -282,9 +282,18 @@ class MainActivity : AppCompatActivity() {
             else -> "Active d'abord les options pour les développeurs : dans « À propos du téléphone », " +
                 "touche 7 fois « Numéro de build ». Active ensuite « Débogage USB »."
         }
-        val message = "PC : télécharge CamTel pour Windows sur\n$PC_URL\n\n" +
+        val message = android.text.SpannableStringBuilder("PC : télécharge CamTel pour Windows sur\n$PC_URL\n\n" +
             "Wi-Fi : même réseau que le PC, laisse cette app ouverte. Le PC te trouve et se connecte tout seul.\n\n" +
-            "USB (plus fluide) : $usb\nÀ la première connexion, accepte « Autoriser le débogage USB ? »."
+            "USB (plus fluide) : $usb\nÀ la première connexion, accepte « Autoriser le débogage USB ? ».\n\n"
+        )
+        // Lien discret vers le playground, en pied de la fenêtre d'aide.
+        val sigStart = message.length
+        message.append("un projet du bored dev playground")
+        listOf(
+            android.text.style.URLSpan(PLAYGROUND_URL),
+            android.text.style.RelativeSizeSpan(0.8f),
+            android.text.style.TypefaceSpan("monospace"),
+        ).forEach { message.setSpan(it, sigStart, message.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE) }
         val dialog = AlertDialog.Builder(this)
             .setTitle("Connecter au PC")
             .setMessage(message)
@@ -303,10 +312,12 @@ class MainActivity : AppCompatActivity() {
         dialog.setNegativeButton("Lien PC") { _, _ ->
             startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(PC_URL)))
         }
-        dialog.show()
+        dialog.show().findViewById<android.widget.TextView>(android.R.id.message)?.movementMethod =
+            android.text.method.LinkMovementMethod.getInstance()
     }
 
     companion object {
         private const val PC_URL = "https://ghermin.github.io/camtel/"
+        private const val PLAYGROUND_URL = "https://ghermin.github.io/"
     }
 }
