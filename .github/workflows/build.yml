@@ -19,7 +19,7 @@ jobs:
         platform: [x64, Win32]
     steps:
       - uses: actions/checkout@v5
-      - uses: microsoft/setup-msbuild@v2
+      - uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce # v2
       - name: Build softcam (CamTel Camera)
         working-directory: driver
         run: msbuild softcam.sln /m /t:softcam /p:Configuration=Release /p:Platform=${{ matrix.platform }}
@@ -75,7 +75,7 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-      - uses: gradle/actions/setup-gradle@v5
+      - uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5
       - name: Version
         id: ver
         run: |

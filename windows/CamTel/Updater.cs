@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Net.Http.Headers;
 using System.Text.Json;
 
@@ -18,7 +19,7 @@ public static class Updater
         }
     }
 
-    public sealed record Release(Version Version, string ExeUrl, long ExeSize);
+    public sealed record Release(Version Version, string ExeUrl, long ExeSize, string Sha256);
 
     /// <summary>The latest release if it is newer than this exe, otherwise null.</summary>
     public static async Task<Release?> CheckAsync(CancellationToken ct = default)
@@ -35,8 +36,12 @@ public static class Updater
             foreach (var asset in root.GetProperty("assets").EnumerateArray())
             {
                 if (asset.GetProperty("name").GetString() != "CamTel.exe") continue;
-                return new Release(latest, asset.GetProperty("browser_download_url").GetString()!,
-                    asset.GetProperty("size").GetInt64());
+                var url = asset.GetProperty("browser_download_url").GetString() ?? "";
+                // Only our own release assets, and only with the SHA-256 GitHub computed for them.
+                if (!url.StartsWith("https://github.com/Ghermin/camtel/releases/download/", StringComparison.OrdinalIgnoreCase)) return null;
+                var digest = asset.TryGetProperty("digest", out var d) ? d.GetString() ?? "" : "";
+                if (!digest.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase)) return null;
+                return new Release(latest, url, asset.GetProperty("size").GetInt64(), digest[7..].ToLowerInvariant());
             }
         }
         catch
@@ -53,7 +58,7 @@ public static class Updater
             var dir = Path.Combine(Path.GetTempPath(), "CamTel-update");
             Directory.CreateDirectory(dir);
             var path = Path.Combine(dir, $"CamTel-{release.Version}.exe");
-            if (File.Exists(path) && new FileInfo(path).Length == release.ExeSize) return path;
+            if (File.Exists(path) && new FileInfo(path).Length == release.ExeSize && Sha256Of(path) == release.Sha256) return path;
             var partial = path + ".part";
             using (var http = NewClient())
             await using (var src = await http.GetStreamAsync(release.ExeUrl, ct))
@@ -61,7 +66,7 @@ public static class Updater
             {
                 await src.CopyToAsync(dst, ct);
             }
-            if (new FileInfo(partial).Length != release.ExeSize)
+            if (new FileInfo(partial).Length != release.ExeSize || Sha256Of(partial) != release.Sha256)
             {
                 File.Delete(partial);
                 return null;
@@ -96,6 +101,12 @@ public static class Updater
         catch
         {
         }
+    }
+
+    private static string Sha256Of(string file)
+    {
+        using var fs = File.OpenRead(file);
+        return Convert.ToHexString(SHA256.HashData(fs)).ToLowerInvariant();
     }
 
     private static HttpClient NewClient()
