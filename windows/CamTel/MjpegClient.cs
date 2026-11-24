@@ -13,14 +13,16 @@ public static class MjpegClient
     })
     {
         Timeout = Timeout.InfiniteTimeSpan,
+        MaxResponseContentBufferSize = 1024 * 1024,
     };
 
     /// <summary>Streams frames until the connection drops, stalls for 5 s, or <paramref name="ct"/> is cancelled.</summary>
-    public static async Task StreamAsync(Uri uri, Action<byte[]> onFrame, CancellationToken ct)
+    public static async Task StreamAsync(Uri uri, string? auth, Action<byte[]> onFrame, CancellationToken ct)
     {
         using var stall = CancellationTokenSource.CreateLinkedTokenSource(ct);
         stall.CancelAfter(TimeSpan.FromSeconds(8));
-        using var resp = await Http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, stall.Token);
+        using var req = Get(uri, auth);
+        using var resp = await Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, stall.Token);
         resp.EnsureSuccessStatusCode();
         await using var stream = await resp.Content.ReadAsStreamAsync(stall.Token);
         var reader = new PartReader(stream);
@@ -34,19 +36,37 @@ public static class MjpegClient
         }
     }
 
-    /// <summary>GET on the phone's HTTP API, returns the body or null on failure.</summary>
-    public static async Task<string?> GetStringAsync(Uri uri, CancellationToken ct = default, TimeSpan? timeout = null)
+    /// <summary>GET on the phone's HTTP API, returns the body or null on failure (including 401).</summary>
+    public static async Task<string?> GetStringAsync(Uri uri, string? auth, CancellationToken ct = default, TimeSpan? timeout = null)
+    {
+        var (status, body) = await RequestAsync(uri, auth, ct, timeout);
+        return status == System.Net.HttpStatusCode.OK ? body : null;
+    }
+
+    /// <summary>GET on the phone's HTTP API: status code and body, or (null, null) if unreachable.</summary>
+    public static async Task<(System.Net.HttpStatusCode? Status, string? Body)> RequestAsync(Uri uri, string? auth,
+        CancellationToken ct = default, TimeSpan? timeout = null)
     {
         try
         {
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(timeout ?? TimeSpan.FromSeconds(4));
-            return await Http.GetStringAsync(uri, cts.Token);
+            using var req = Get(uri, auth);
+            using var resp = await Http.SendAsync(req, cts.Token);
+            return (resp.StatusCode, await resp.Content.ReadAsStringAsync(cts.Token));
         }
         catch
         {
-            return null;
+            return (null, null);
         }
+    }
+
+    /// <summary>A GET carrying the pairing proof (see <see cref="PhoneAuth"/>), never the token itself.</summary>
+    private static HttpRequestMessage Get(Uri uri, string? auth)
+    {
+        var req = new HttpRequestMessage(HttpMethod.Get, uri);
+        if (auth != null) req.Headers.TryAddWithoutValidation("Authorization", auth);
+        return req;
     }
 
     private sealed class PartReader

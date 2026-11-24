@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Net;
 using System.Reflection;
 using System.Text.Json;
 using QRCoder;
@@ -46,6 +47,9 @@ public sealed class MainForm : Form
     private CancellationTokenSource? _connectCts;
     private Phone? _connected;
     private Uri? _apiBase;
+    private string? _apiAuth;
+    /// <summary>Unpaired phones whose code prompt was cancelled: auto-connect leaves them alone.</summary>
+    private readonly HashSet<string> _declined = new();
     private volatile bool _streaming;
     private Image? _previewImage;
     private bool _reallyClose;
@@ -683,17 +687,24 @@ public sealed class MainForm : Form
                 Connect(cable);
             return;
         }
+        // A phone that still needs its code is only picked while the window is open to ask for it.
+        var paired = wifi.Where(IsPaired).ToList();
         var pick = usb.FirstOrDefault()
-                   ?? wifi.FirstOrDefault(p => p.Host == _settings.LastHost)
-                   ?? wifi.FirstOrDefault();
+                   ?? paired.FirstOrDefault(p => p.Host == _settings.LastHost)
+                   ?? paired.FirstOrDefault()
+                   ?? (Visible ? wifi.FirstOrDefault(p => p.Id != null && !_declined.Contains(p.Id)) : null);
         if (pick != null) Connect(pick);
     }
+
+    /// <summary>USB phones pair through adb; phones older than 1.5 (no id) need no pairing.</summary>
+    private bool IsPaired(Phone p) => p.Usb || p.Id == null || _settings.Pairings.ContainsKey(p.Id);
 
     private void ConnectToSelection()
     {
         _userDisconnected = false;
         if (_phoneBox.SelectedItem is Phone p)
         {
+            if (p.Id != null) _declined.Remove(p.Id);
             Connect(p);
             return;
         }
@@ -739,6 +750,7 @@ public sealed class MainForm : Form
         _connectCts = null;
         _connected = null;
         _apiBase = null;
+        _apiAuth = null;
         _streaming = false;
         _connectBtn.Text = "Connecter";
         _phoneBox.Enabled = true;
@@ -748,6 +760,8 @@ public sealed class MainForm : Form
 
     private async Task ConnectLoopAsync(Phone phone, CancellationToken ct)
     {
+        var id = phone.Id;
+        var usbToken = phone.Token;
         while (!ct.IsCancellationRequested)
         {
             var host = phone.Host;
@@ -762,25 +776,65 @@ public sealed class MainForm : Form
             var api = new Uri($"http://{host}:{port}/");
             SetLink($"Connexion à {phone.Name}…");
             _pipeline.Placeholder = $"Connexion à {phone.Name}…";
-            var status = await MjpegClient.GetStringAsync(new Uri(api, "status"), ct);
-            if (status == null)
+            var token = usbToken ?? (id != null && _settings.Pairings.TryGetValue(id, out var saved) ? saved : null);
+            var auth = PhoneAuth.Header(token, host);
+            var (code, status) = await MjpegClient.RequestAsync(new Uri(api, "status"), auth, ct);
+            if (ct.IsCancellationRequested) return;
+            if (code == HttpStatusCode.Unauthorized && PhoneAuth.ParseIdentity(status) is { Id: not null } who)
+            {
+                id = who.Id;
+                if (phone.Usb)
+                {
+                    // The phone forgot its PCs (new secret): read it again over adb.
+                    var (newId, newToken) = phone.Serial != null ? await UsbPhones.ReadPairingAsync(phone.Serial) : (null, null);
+                    if (newToken != null && newToken != usbToken)
+                    {
+                        (id, usbToken) = (newId, newToken);
+                        continue;
+                    }
+                }
+                else if (token == null && _settings.Pairings.ContainsKey(id))
+                {
+                    continue; // typed address of a phone paired earlier: now we know which one it is
+                }
+                else
+                {
+                    // Not paired yet, or the phone forgot this PC.
+                    if (token != null && _settings.Pairings.Remove(id)) _settings.Save();
+                    if (Visible && await PairAsync(phone, api, ct)) continue;
+                    if (ct.IsCancellationRequested) return;
+                    if (Visible) _declined.Add(id);
+                    _hint = $"{phone.Name} demande le code affiché dans l'app CamTel du téléphone";
+                    _hintAt = DateTime.UtcNow;
+                    BeginInvokeSafe(() => { if (_connected == phone) Disconnect(byUser: false); });
+                    return;
+                }
+            }
+            if (code != HttpStatusCode.OK || status == null)
             {
                 SetLink($"{phone.Name} ne répond pas. L'app CamTel est-elle ouverte sur le téléphone ?");
                 _pipeline.Placeholder = "Ouvre l'app CamTel sur le téléphone";
                 if (!await GiveUpOrWaitAsync(phone, ct)) return;
                 continue;
             }
+            // A secret read over USB also lets this PC connect over Wi-Fi later.
+            if (usbToken != null && id != null && (!_settings.Pairings.TryGetValue(id, out var known) || known != usbToken))
+            {
+                _settings.Pairings[id] = usbToken;
+                _settings.Save();
+            }
 
             _apiBase = api;
+            _apiAuth = auth;
             _failures = 0;
             BeginInvokeSafe(() => ApplyPhoneStatus(status));
             using var session = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            _ = StatusLoopAsync(api, session.Token);
+            _ = StatusLoopAsync(api, auth, session.Token);
             try
             {
                 _streaming = true;
                 SetLink($"Connecté à {phone.Name}");
-                await MjpegClient.StreamAsync(new Uri(api, "video"), _pipeline.SubmitJpeg, ct);
+                await MjpegClient.StreamAsync(new Uri(api, "video"), auth, _pipeline.SubmitJpeg, ct);
             }
             catch (Exception) when (!ct.IsCancellationRequested)
             {
@@ -802,12 +856,12 @@ public sealed class MainForm : Form
     }
 
     /// <summary>Long-polls /status so changes made on the phone show up here immediately.</summary>
-    private async Task StatusLoopAsync(Uri api, CancellationToken ct)
+    private async Task StatusLoopAsync(Uri api, string? auth, CancellationToken ct)
     {
         long version = 0;
         while (!ct.IsCancellationRequested)
         {
-            var json = await MjpegClient.GetStringAsync(new Uri(api, $"status?since={version}"), ct,
+            var json = await MjpegClient.GetStringAsync(new Uri(api, $"status?since={version}"), auth, ct,
                 TimeSpan.FromSeconds(30));
             if (ct.IsCancellationRequested) return;
             if (json == null)
@@ -863,7 +917,41 @@ public sealed class MainForm : Form
         var api = _apiBase;
         if (api == null) return;
         // The phone applies the change and the status long-poll brings the new state back.
-        await MjpegClient.GetStringAsync(new Uri(api, "control?" + query));
+        await MjpegClient.GetStringAsync(new Uri(api, "control?" + query), _apiAuth);
+    }
+
+    /// <summary>Asks for the code shown on the phone until it is right or the user cancels.</summary>
+    private async Task<bool> PairAsync(Phone phone, Uri api, CancellationToken ct)
+    {
+        SetLink($"{phone.Name} : entre le code affiché sur le téléphone");
+        _pipeline.Placeholder = "Entre le code affiché sur le téléphone";
+        string? error = null;
+        while (!ct.IsCancellationRequested)
+        {
+            var code = InvokeRequired
+                ? (string?)Invoke(() => PairingDialog.Ask(this, phone.Name, error))
+                : PairingDialog.Ask(this, phone.Name, error);
+            if (code == null || ct.IsCancellationRequested) return false;
+            var (result, id, token) = await PhoneAuth.PairAsync(api, code, ct);
+            switch (result)
+            {
+                case PhoneAuth.PairResult.Paired:
+                    _settings.Pairings[id!] = token!;
+                    _settings.Save();
+                    _declined.Remove(id!);
+                    return true;
+                case PhoneAuth.PairResult.WrongCode:
+                    error = "Code incorrect. Vérifie le code affiché dans l'app CamTel (il change après 5 essais).";
+                    break;
+                case PhoneAuth.PairResult.Closed:
+                    error = "Ouvre l'app CamTel sur le téléphone : le code s'affiche en haut à gauche.";
+                    break;
+                default:
+                    error = $"{phone.Name} ne répond pas.";
+                    break;
+            }
+        }
+        return false;
     }
 
     private void ApplyPhoneStatus(string json)
@@ -955,7 +1043,7 @@ public sealed class MainForm : Form
             AutoSize = false, Size = new Size(290, 210), Location = new Point(274, 70), ForeColor = Muted, Tag = "muted",
             Font = new Font("Segoe UI", 10f),
             Text = "1. Scanne ce QR code avec l'appareil photo du téléphone pour installer l'app CamTel.\n\n" +
-                   "2. Ouvre l'app : en Wi-Fi, le PC la trouve et se connecte tout seul.\n\n" +
+                   "2. Ouvre l'app : en Wi-Fi, le PC la trouve. La première fois, entre le code affiché sur le téléphone.\n\n" +
                    "Ou branche le téléphone en USB (débogage USB activé) : CamTel installe et lance l'app automatiquement.",
         };
         _welcome.Controls.Add(qr);

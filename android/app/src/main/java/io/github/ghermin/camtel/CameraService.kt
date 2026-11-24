@@ -503,7 +503,17 @@ class CameraService : LifecycleService(), StreamServer.Controller {
 
     // ---- StreamServer.Controller (network threads) ------------------------
 
-    override fun statusJson(): String = CamState.toJson(deviceName)
+    override fun statusJson(): String = CamState.toJson(deviceName, Pairing.id(this))
+
+    override fun authorized(host: String?, authorization: String?) = Pairing.authorized(this, host, authorization)
+
+    override fun authGeneration() = Pairing.generation
+
+    override fun identityJson(): String =
+        """{"app":"CamTel","id":"${Pairing.id(this)}","name":"${deviceName.replace("\"", "")}",""" +
+            """"pairing":${Pairing.code != null}}"""
+
+    override fun pair(code: String) = Pairing.pair(this, code)
 
     override fun awaitChange(since: Long, timeoutMs: Long) = CamState.awaitChange(since, timeoutMs)
 

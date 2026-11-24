@@ -68,9 +68,9 @@ object CamState {
 
     val resolution: Size get() = RESOLUTIONS[resIndex]
 
-    fun toJson(name: String): String {
+    fun toJson(name: String, id: String): String {
         val s = resolution
-        return """{"app":"CamTel","version":$version,"name":"${name.replace("\"", "")}",""" +
+        return """{"app":"CamTel","id":"$id","version":$version,"name":"${name.replace("\"", "")}",""" +
             """"camera":"${if (front) "front" else "back"}","torch":$torch,"hasFlash":$hasFlash,""" +
             """"resolution":"${s.width}x${s.height}","quality":$quality,"zoom":$zoom,"mirror":$mirror,""" +
             """"blackout":$blackout,"night":$night,"exposure":$exposure,"exposureMin":$exposureMin,""" +

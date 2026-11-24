@@ -24,14 +24,16 @@ Une alternative libre et sans pub à DroidCam.
 **Téléphone (Android 8+)**, au choix :
 
 - **Wi-Fi** : scanne le QR code affiché par CamTel sur le PC avec l'appareil photo, installe
-  l'APK, ouvre l'app. Le PC trouve le téléphone sur le réseau et se connecte tout seul, sans
-  réglage de pare-feu.
+  l'APK, ouvre l'app. Le PC trouve le téléphone sur le réseau, sans réglage de pare-feu. **La
+  première fois**, il demande le **Code PC** à 6 chiffres affiché en haut à gauche de l'app :
+  tape-le sur le PC. Ensuite il se connecte tout seul.
 - **USB** : branche le téléphone avec le
   [débogage USB](https://developer.android.com/studio/debug/dev-options) activé, puis accepte
   « Autoriser le débogage USB ? ». CamTel installe ou met à jour l'app sur le téléphone, donne
-  l'accès caméra, la lance et se connecte. Les outils Android (`adb`) sont téléchargés depuis
-  Google au premier lancement s'ils manquent. L'app du téléphone explique comment activer le
-  débogage USB (touche le cadre d'infos en haut à gauche).
+  l'accès caméra, la lance et se connecte, sans code à taper (le PC appairé en USB marche
+  aussi en Wi-Fi ensuite). Les outils Android (`adb`) sont téléchargés depuis Google au premier
+  lancement s'ils manquent. L'app du téléphone explique comment activer le débogage USB (touche
+  le cadre d'infos en haut à gauche).
 
 Ensuite, choisis la caméra **CamTel Camera** dans ton appli de visio. Si l'appli était déjà
 ouverte avant l'installation, quitte-la complètement et relance-la.
@@ -73,7 +75,14 @@ image d'attente quand le téléphone est déconnecté.
 
 Le téléphone affiche exactement les images envoyées au PC, en version allégée. La diffusion
 continue quand l'app est en arrière-plan ou que l'écran est verrouillé (notification « CamTel
-diffuse la caméra », bouton **Arrêter**). Visionneuse web : `http://<ip-du-tel>:4747/`.
+diffuse la caméra », bouton **Arrêter**).
+
+**Appairage** : seuls les PC appairés peuvent voir la caméra ou la piloter, pas les autres
+appareils du même Wi-Fi (Wi-Fi public, réseau invité, colocation). Un PC s'appaire une fois, en
+USB (automatique) ou en tapant le Code PC du téléphone. Le code n'existe que pendant que l'app
+est à l'écran et change après 5 essais faux. Pour retirer l'accès à tous les PC : touche le cadre
+d'infos → **Oublier les PC appairés**. L'image elle-même n'est pas chiffrée sur le Wi-Fi : sur un
+réseau public, préfère l'USB.
 
 **Batterie et ressources**
 
@@ -105,6 +114,20 @@ API HTTP du téléphone :
 | `GET /video` | flux MJPEG (`multipart/x-mixed-replace`) |
 | `GET /status` | état en JSON ; `?since=<version>` attend un changement (long-polling, 20 s max) |
 | `GET /control?camera=front\|back\|toggle&torch=on\|off&mirror=on\|off&night=on\|off&blackout=on\|off&res=1280x720&quality=80&zoom=0.5&exposure=-1.0` | réglages |
+| `GET /pair?code=123456` | appairage Wi-Fi : renvoie `{"id","token"}` si le code est bon, sinon 403 |
+
+**Authentification.** L'app crée au premier lancement un secret aléatoire de 256 bits (`token`)
+et un identifiant public qui en découle (`id`). Le PC l'obtient une fois : en USB par
+`adb shell content query --uri content://io.github.ghermin.camtel.pairing` (réservé au shell
+adb), ou en Wi-Fi par `/pair`. Ensuite, chaque requête porte
+`Authorization: CamTel <hex(HMAC-SHA256(token, "camtel-auth:" + ip))>`, où `ip` est l'adresse
+utilisée pour joindre le téléphone (`127.0.0.1` en USB). Le téléphone n'accepte que ses propres
+adresses et compare en temps constant ; le secret lui-même ne circule plus, et un appareil qui se
+ferait passer pour le téléphone ne récupère rien de réutilisable. Sans preuve valable, `/video`,
+`/status` et `/control` répondent **401** avec seulement `{"app","id","name","pairing"}`, ce qui
+suffit au PC pour trouver le téléphone. Les requêtes venant d'un autre site web (DNS rebinding,
+`Origin` ou `Sec-Fetch-Site` étrangers) reçoivent 403. Le PC garde les secrets dans
+`%APPDATA%\CamTel\settings.json` (`Pairings`).
 
 ### Limites connues
 

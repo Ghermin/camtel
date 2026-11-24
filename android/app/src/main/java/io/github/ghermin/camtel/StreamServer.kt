@@ -16,7 +16,10 @@ import java.util.concurrent.atomic.AtomicInteger
  *  GET /video    -> MJPEG stream (multipart/x-mixed-replace)
  *  GET /status   -> JSON status (?since=<version> long-polls until the state changes)
  *  GET /control  -> apply query parameters, returns JSON status
- *  GET /         -> tiny HTML viewer
+ *  GET /pair?code=123456 -> pairing token for the code shown on the phone (see [Pairing])
+ *
+ * Every path but /pair needs `Authorization: CamTel <hex>` (see [Pairing.authorized]). Without it
+ * the answer is 401 with only {"app","id","name","pairing"}: enough for the PC to find the phone.
  */
 class StreamServer(
     private val port: Int,
@@ -28,6 +31,11 @@ class StreamServer(
         fun awaitChange(since: Long, timeoutMs: Long)
         fun control(params: Map<String, String>)
         fun onClientsChanged(count: Int)
+        fun authorized(host: String?, authorization: String?): Boolean
+        /** Changes when the pairing token changes: open streams then stop. */
+        fun authGeneration(): Long
+        fun identityJson(): String
+        fun pair(code: String): Pairing.Result
     }
 
     private val clients = AtomicInteger(0)
@@ -79,24 +87,43 @@ class StreamServer(
                 val path = target.substringBefore('?')
                 val query = parseQuery(target.substringAfter('?', ""))
                 val out = BufferedOutputStream(s.getOutputStream(), 128 * 1024)
-                if (path != "/" && !allowed(headers)) {
+                if (!allowed(headers)) {
                     respond(out, "403 Forbidden", "text/plain", "forbidden")
                     return
                 }
+                if (path == "/pair") {
+                    when (val r = controller.pair(query["code"] ?: "")) {
+                        is Pairing.Result.Paired -> respond(
+                            out, "200 OK", "application/json", """{"id":"${r.id}","token":"${r.token}"}"""
+                        )
+                        Pairing.Result.WrongCode ->
+                            respond(out, "403 Forbidden", "application/json", """{"error":"code"}""")
+                        Pairing.Result.Closed ->
+                            respond(out, "403 Forbidden", "application/json", """{"error":"closed"}""")
+                    }
+                    return
+                }
+                val host = headers["host"]
+                val authorization = headers["authorization"]
+                if (!controller.authorized(host, authorization)) {
+                    unauthorized(out)
+                    return
+                }
                 when (path) {
-                    "/video", "/mjpeg", "/video.mjpg" -> streamVideo(s, out)
+                    "/video", "/mjpeg", "/video.mjpg" -> streamVideo(s, out, controller.authGeneration())
                     "/status" -> {
                         query["since"]?.toLongOrNull()?.let {
                             s.soTimeout = 0
                             controller.awaitChange(it, 20_000)
                         }
-                        respond(out, "200 OK", "application/json", controller.statusJson())
+                        // The PC may have been forgotten while this request was waiting.
+                        if (!controller.authorized(host, authorization)) unauthorized(out)
+                        else respond(out, "200 OK", "application/json", controller.statusJson())
                     }
                     "/control" -> {
                         controller.control(query)
                         respond(out, "200 OK", "application/json", controller.statusJson())
                     }
-                    "/" -> respond(out, "200 OK", "text/html; charset=utf-8", INDEX_HTML)
                     else -> respond(out, "404 Not Found", "text/plain", "not found")
                 }
             } catch (_: IOException) {
@@ -105,7 +132,10 @@ class StreamServer(
         }
     }
 
-    private fun streamVideo(socket: Socket, out: OutputStream) {
+    private fun unauthorized(out: OutputStream) =
+        respond(out, "401 Unauthorized", "application/json", controller.identityJson(), "WWW-Authenticate: CamTel\r\n")
+
+    private fun streamVideo(socket: Socket, out: OutputStream, generation: Long) {
         socket.soTimeout = 0
         socket.sendBufferSize = 512 * 1024
         out.write(
@@ -120,7 +150,7 @@ class StreamServer(
         controller.onClientsChanged(clients.incrementAndGet())
         try {
             var seq = 0L
-            while (!socket.isClosed) {
+            while (!socket.isClosed && controller.authGeneration() == generation) {
                 val next = hub.await(seq, 2000) ?: continue
                 seq = next.first
                 val jpeg = next.second
@@ -138,10 +168,10 @@ class StreamServer(
         }
     }
 
-    private fun respond(out: OutputStream, status: String, type: String, body: String) {
+    private fun respond(out: OutputStream, status: String, type: String, body: String, extraHeaders: String = "") {
         val bytes = body.toByteArray(Charsets.UTF_8)
         out.write(
-            ("HTTP/1.1 $status\r\nContent-Type: $type\r\nContent-Length: ${bytes.size}\r\n" +
+            ("HTTP/1.1 $status\r\nContent-Type: $type\r\nContent-Length: ${bytes.size}\r\n" + extraHeaders +
                 "X-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\n" +
                 "Cache-Control: no-cache\r\nConnection: close\r\n\r\n")
                 .toByteArray(Charsets.ISO_8859_1)
@@ -151,7 +181,7 @@ class StreamServer(
     }
 
     /**
-     * The PC app (and the built-in viewer at /) talk to the phone by IP address. Refuse what only a
+     * The PC app talks to the phone by IP address. Refuse what only a
      * web page from another site could send: a domain name in Host (DNS rebinding), a cross-site
      * Sec-Fetch-Site, or an Origin that is not this server. No CORS header is sent, so other sites
      * cannot read the camera image or the status either.
@@ -180,12 +210,5 @@ class StreamServer(
         private val CRLF = "\r\n".toByteArray()
         private val IPV4 = Regex("""^\d{1,3}(\.\d{1,3}){3}$""")
         private val IPV6 = Regex("""^\[[0-9a-f:.%]+]$""")
-        private const val INDEX_HTML =
-            "<!doctype html><html><head><meta charset=\"utf-8\">" +
-                "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
-                "<title>CamTel</title>" +
-                "<style>html,body{margin:0;background:#000;height:100%}" +
-                "img{width:100%;height:100%;object-fit:contain}</style>" +
-                "</head><body><img src=\"/video\" alt=\"CamTel\"></body></html>"
     }
 }

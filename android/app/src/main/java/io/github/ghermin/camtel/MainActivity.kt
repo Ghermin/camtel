@@ -95,10 +95,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     private val permissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-            if (result[Manifest.permission.CAMERA] == true) startAndBind() else {
-                Toast.makeText(this, R.string.permission_needed, Toast.LENGTH_LONG).show()
-                finish()
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+            // Only the camera is required. When it was already granted, only notifications were
+            // asked (and the service is already started): refusing them must not close the app.
+            val camera = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
+                PackageManager.PERMISSION_GRANTED
+            when {
+                !camera -> {
+                    Toast.makeText(this, R.string.permission_needed, Toast.LENGTH_LONG).show()
+                    finish()
+                }
+                !bound -> startAndBind()
             }
         }
 
@@ -174,6 +181,8 @@ class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         CamState.addListener(stateListener)
+        // Wi-Fi pairing is only possible while the app is on screen (code shown in the info box).
+        Pairing.open()
         attachPreview()
         render()
     }
@@ -192,6 +201,7 @@ class MainActivity : AppCompatActivity() {
     override fun onStop() {
         super.onStop()
         CamState.removeListener(stateListener)
+        Pairing.close()
         // The view is going away; keep streaming without a preview surface.
         service?.attachPreview(null, null)
         // Leaving the app while the screen was "black" should not leave it black.
@@ -266,7 +276,9 @@ class MainActivity : AppCompatActivity() {
         val port = CameraService.HTTP_PORT
         val addr = if (ips.isEmpty()) "Pas de Wi-Fi · USB possible" else ips.joinToString("\n") { "$it:$port" }
         val state = if (CamState.clients > 0) "● PC connecté · ${CamState.fps} ips" else "○ En attente du PC…"
-        binding.info.text = "$addr\n$state · ${CamState.frameWidth}×${CamState.frameHeight}\nⓘ Aide connexion"
+        val code = Pairing.code
+        val pair = if (CamState.clients == 0 && code != null) "\nCode PC : ${code.take(3)} ${code.drop(3)}" else ""
+        binding.info.text = "$addr\n$state · ${CamState.frameWidth}×${CamState.frameHeight}$pair\nⓘ Aide connexion"
     }
 
     private fun usbDebuggingEnabled(): Boolean =
@@ -283,9 +295,17 @@ class MainActivity : AppCompatActivity() {
                 "touche 7 fois « Numéro de build ». Active ensuite « Débogage USB »."
         }
         val message = android.text.SpannableStringBuilder("PC : télécharge CamTel pour Windows sur\n$PC_URL\n\n" +
-            "Wi-Fi : même réseau que le PC, laisse cette app ouverte. Le PC te trouve et se connecte tout seul.\n\n" +
+            "Wi-Fi : même réseau que le PC, laisse cette app ouverte. Le PC te trouve ; la première fois, " +
+            "tape sur le PC le « Code PC » affiché ici. Ensuite il se connecte tout seul.\n\n" +
             "USB (plus fluide) : $usb\nÀ la première connexion, accepte « Autoriser le débogage USB ? ».\n\n"
         )
+        // Revokes every PC paired so far (new secret): they need the code or the cable again.
+        val forgetStart = message.length
+        message.append("Oublier les PC appairés")
+        message.setSpan(object : android.text.style.ClickableSpan() {
+            override fun onClick(widget: View) = confirmForgetPcs()
+        }, forgetStart, message.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        message.append("\n\n")
         // Lien discret vers le playground, en pied de la fenêtre d'aide.
         val sigStart = message.length
         message.append("un projet du bored dev playground")
@@ -314,6 +334,19 @@ class MainActivity : AppCompatActivity() {
         }
         dialog.show().findViewById<android.widget.TextView>(android.R.id.message)?.movementMethod =
             android.text.method.LinkMovementMethod.getInstance()
+    }
+
+    private fun confirmForgetPcs() {
+        AlertDialog.Builder(this)
+            .setTitle("Oublier les PC appairés ?")
+            .setMessage("Les PC déjà appairés sont déconnectés. Pour revenir, ils devront entrer le nouveau " +
+                "code ou être branchés en USB.")
+            .setPositiveButton("Oublier") { _, _ ->
+                Pairing.reset(this)
+                Toast.makeText(this, "PC oubliés", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Annuler", null)
+            .show()
     }
 
     companion object {

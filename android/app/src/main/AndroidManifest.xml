@@ -47,5 +47,12 @@
             android:name=".CameraService"
             android:exported="false"
             android:foregroundServiceType="camera" />
+
+        <!-- Pairing token for CamTel.exe over USB; answers only the adb shell (see PairingProvider). -->
+        <provider
+            android:name=".PairingProvider"
+            android:authorities="io.github.ghermin.camtel.pairing"
+            android:exported="true"
+            android:grantUriPermissions="false" />
     </application>
 </manifest>

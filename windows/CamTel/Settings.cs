@@ -14,6 +14,9 @@ public sealed class Settings
     public bool Installed { get; set; }
     public bool TrayTipShown { get; set; }
 
+    /// <summary>Paired phones: pairing id → token (hex), from adb over USB or the code over Wi-Fi.</summary>
+    public Dictionary<string, string> Pairings { get; set; } = new();
+
     private static string FilePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CamTel", "settings.json");
 

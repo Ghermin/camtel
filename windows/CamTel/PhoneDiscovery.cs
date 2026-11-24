@@ -10,6 +10,12 @@ public sealed record Phone(string Name, string Host, int Port, bool Usb)
     /// <summary>adb serial for USB phones (Host/Port are then the local forwarded endpoint).</summary>
     public string? Serial { get; init; }
 
+    /// <summary>Public pairing id announced by the phone (null for phones older than 1.5).</summary>
+    public string? Id { get; init; }
+
+    /// <summary>Pairing token read over adb (USB phones only).</summary>
+    public string? Token { get; init; }
+
     public override string ToString() => Usb ? $"USB · {Name}" : $"Wi-Fi · {Name} ({Host})";
 }
 
@@ -27,6 +33,7 @@ public sealed class PhoneDiscovery : IDisposable
     private readonly HttpClient _http = new(new SocketsHttpHandler { UseProxy = false })
     {
         Timeout = TimeSpan.FromSeconds(2),
+        MaxResponseContentBufferSize = 64 * 1024,
     };
 
     public event Action? Changed;
@@ -143,11 +150,14 @@ public sealed class PhoneDiscovery : IDisposable
     {
         try
         {
-            var json = await _http.GetStringAsync($"http://{ip}:{PhonePort}/status", ct);
-            using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.GetProperty("app").GetString() != "CamTel") return null;
-            var name = doc.RootElement.GetProperty("name").GetString() ?? ip.ToString();
-            return new Phone(name, ip.ToString(), PhonePort, false);
+            // No credentials here: this goes to every address of the LAN. A paired phone answers
+            // 401 with its id and name, an older one 200 with its status.
+            using var resp = await _http.GetAsync($"http://{ip}:{PhonePort}/status", ct);
+            if (resp.StatusCode is not (HttpStatusCode.OK or HttpStatusCode.Unauthorized)) return null;
+            var who = PhoneAuth.ParseIdentity(await resp.Content.ReadAsStringAsync(ct));
+            if (who == null) return null;
+            var name = who.Name.Length > 0 ? who.Name : ip.ToString();
+            return new Phone(name, ip.ToString(), PhonePort, false) { Id = who.Id };
         }
         catch
         {

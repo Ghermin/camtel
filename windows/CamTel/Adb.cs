@@ -328,7 +328,23 @@ public sealed class UsbPhones : IDisposable
             _ports[d.Serial] = port;
         }
         if (!await Adb.ForwardAsync(d.Serial, port, PhoneDiscovery.PhonePort)) return null;
-        return new Phone(d.Model, "127.0.0.1", port, true) { Serial = d.Serial };
+        // USB debugging is already trusted: read the pairing secret, no code to type.
+        var (id, token) = await ReadPairingAsync(d.Serial);
+        return new Phone(d.Model, "127.0.0.1", port, true) { Serial = d.Serial, Id = id, Token = token };
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex PairingRow =
+        new(@"id=([0-9a-f]{16}), token=([0-9a-f]{64})");
+
+    /// <summary>
+    /// Reads the phone's pairing id and token through the app's content provider, which only
+    /// answers the adb shell. (null, null) for apps older than 1.5 or if adb fails.
+    /// </summary>
+    public static async Task<(string? Id, string? Token)> ReadPairingAsync(string serial)
+    {
+        var output = await Adb.ShellAsync(serial, $"content query --uri content://{Package}.pairing") ?? "";
+        var m = PairingRow.Match(output);
+        return m.Success ? (m.Groups[1].Value, m.Groups[2].Value) : (null, null);
     }
 
     /// <summary>Starts the phone app again (e.g. after it was closed while the cable stays plugged).</summary>
