@@ -35,7 +35,8 @@ public sealed class MainForm : Form
     private readonly bool _firstRun;
     private readonly bool _updated;
     private readonly System.Windows.Forms.Timer _updateTimer = new() { Interval = 60_000 };
-    private DateTime _nextUpdateCheck = DateTime.UtcNow.AddHours(6);
+    // A first periodic check soon after start, in case the network was not up yet for the startup one.
+    private DateTime _nextUpdateCheck = DateTime.UtcNow.AddMinutes(5);
     private bool _startupUpdateDone;
     private string? _pendingUpdate;
     private bool _checkingUpdate;
@@ -381,6 +382,7 @@ public sealed class MainForm : Form
     {
         base.OnHandleCreated(e);
         Theme.ApplyTitleBar(Handle);
+        BeginInvoke(OnStarted);
     }
 
     /// <summary>Re-colours every control for the current Windows theme (light or dark).</summary>
@@ -539,6 +541,19 @@ public sealed class MainForm : Form
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
+        BeginInvoke(EnsureDriver);
+    }
+
+    private bool _started;
+
+    /// <summary>
+    /// Runs once the message loop is up, visible or not: started with Windows (--minimized) the
+    /// window is never shown, and OnShown only runs when the user opens it.
+    /// </summary>
+    private void OnStarted()
+    {
+        if (_started) return;
+        _started = true;
         if (_updated)
         {
             Updater.CleanUp();
@@ -552,7 +567,6 @@ public sealed class MainForm : Form
             _settings.Installed = true;
             _settings.Save();
         }
-        BeginInvoke(EnsureDriver);
         _ = StartupUpdateAsync();
     }
 
