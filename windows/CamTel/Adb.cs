@@ -33,7 +33,6 @@ public static class Adb
         return _adb;
     }
 
-    /// <summary>Returns adb, downloading platform-tools from Google into %LOCALAPPDATA%\CamTel if missing.</summary>
     /// <summary>True when the adb server was not running before CamTel needed it.</summary>
     public static bool StartedServer { get; private set; }
 
@@ -53,18 +52,10 @@ public static class Adb
     /// <summary>Stops the adb server if CamTel started it, so nothing is left running on exit.</summary>
     public static void StopServerIfOwned()
     {
-        var adb = FindAdb();
-        if (adb == null || !StartedServer) return;
-        try
-        {
-            using var p = Process.Start(new ProcessStartInfo(adb, "kill-server") { CreateNoWindow = true, UseShellExecute = false });
-            p?.WaitForExit(3000);
-        }
-        catch
-        {
-        }
+        if (StartedServer) RunAndForget("kill-server", 3000);
     }
 
+    /// <summary>Returns adb, downloading platform-tools from Google into %LOCALAPPDATA%\CamTel if missing.</summary>
     public static async Task<string?> EnsureAsync(Action<string> status, CancellationToken ct)
     {
         StartedServer = !ServerRunning();
@@ -131,6 +122,7 @@ public static class Adb
     {
         var adb = FindAdb();
         if (adb == null) return null;
+        Process? p = null;
         try
         {
             var psi = new ProcessStartInfo(adb, args)
@@ -140,17 +132,51 @@ public static class Adb
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
             };
-            using var p = Process.Start(psi)!;
+            p = Process.Start(psi)!;
             var stdout = p.StandardOutput.ReadToEndAsync();
             var stderr = p.StandardError.ReadToEndAsync();
             using var cts = new CancellationTokenSource(timeout ?? TimeSpan.FromSeconds(15));
             await p.WaitForExitAsync(cts.Token);
-            await stderr;
-            return p.ExitCode == 0 ? await stdout : null;
+            // An adb server started by this call may keep the pipes open: never wait on them forever.
+            var output = await stdout.WaitAsync(TimeSpan.FromSeconds(2));
+            return p.ExitCode == 0 ? output : null;
         }
         catch
         {
             return null;
+        }
+        finally
+        {
+            // A command that hung (device offline, server restarting) must not stay running.
+            Kill(p);
+            p?.Dispose();
+        }
+    }
+
+    /// <summary>Kills an adb client that is still running (only that process, not the server it may have started).</summary>
+    private static void Kill(Process? p)
+    {
+        try
+        {
+            if (p is { HasExited: false }) p.Kill();
+        }
+        catch
+        {
+        }
+    }
+
+    /// <summary>Runs adb without reading its output, for shutdown; gives up (and kills it) after <paramref name="ms"/>.</summary>
+    public static void RunAndForget(string args, int ms)
+    {
+        var adb = FindAdb();
+        if (adb == null) return;
+        try
+        {
+            using var p = Process.Start(new ProcessStartInfo(adb, args) { CreateNoWindow = true, UseShellExecute = false });
+            if (p != null && !p.WaitForExit(ms)) Kill(p);
+        }
+        catch
+        {
         }
     }
 }
@@ -230,22 +256,7 @@ public sealed class UsbPhones : IDisposable
             return;
         }
         foreach (var (serial, port) in _ports)
-        {
-            try
-            {
-                var adb = Adb.FindAdb();
-                if (adb == null) break;
-                using var p = Process.Start(new ProcessStartInfo(adb, $"-s {serial} forward --remove tcp:{port}")
-                {
-                    CreateNoWindow = true,
-                    UseShellExecute = false,
-                });
-                p?.WaitForExit(2000);
-            }
-            catch
-            {
-            }
-        }
+            Adb.RunAndForget($"-s {serial} forward --remove tcp:{port}", 2000);
     }
 
     private async Task PollAsync()
