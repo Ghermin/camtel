@@ -1,0 +1,14 @@
+# Garde à jour les actions épinglées par SHA dans .github/workflows.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+    ignore:
+      # gradle/actions v6 change ses conditions de licence : rester en v5 tant que ce n'est pas accepté.
+      - dependency-name: "gradle/actions*"
+        update-types: ["version-update:semver-major"]
